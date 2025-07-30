@@ -8,3 +8,5 @@ precipitation_levels_during_flood_events.csv
 Exported_data/
 __pycache__
 cache/
+.Rproj.user
+*.Rproj
