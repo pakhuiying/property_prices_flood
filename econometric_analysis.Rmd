@@ -1,0 +1,105 @@
+---
+title: "R_econometric_analysis"
+output: html_document
+date: "2025-07-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(fixest)
+```
+
+# Import residential transaction price
+```{r}
+flood_residential_transaction <- file.path(getwd(),"Exported_Data","flood_residential_transaction.csv")
+flood_residential_transaction <- read.csv(flood_residential_transaction)
+flood_residential_transaction
+```
+```{r}
+names(flood_residential_transaction)
+```
+
+
+```{r}
+names(flood_residential_transaction)
+```
+
+
+```{r}
+transaction_df <- flood_residential_transaction%>%
+  mutate_at(c("Date"), as.Date)%>%
+  mutate(month_year = format(Date,format="%Y-%m"))%>%
+  # log price
+  mutate(log_price_psm = log(Unit.Price....PSM.))%>%
+  # replace NA with a placeholder value e.g. 1000
+  mutate(weeks_since_flood_clean = ifelse(is.na(weeks_since_flood), 1000, weeks_since_flood))%>%
+  # create bins of last flooded event
+  mutate(
+    flood_bin = cut(
+      weeks_since_flood_clean,
+      breaks = c(0, 4, 12, 52, 104,Inf),
+      labels = c("0_4w", "5_12w", "13_52w", "1yr_plus","MoreThan2yrs"),
+      right = TRUE
+    )
+  )%>%
+  # convert chr to boolean
+  mutate_at(c("within_1km_school_car","within_2km_school_car",
+              "within_1km_school_walk","within_2km_school_walk","Is.parks.within.400m"),as.logical)%>%
+  mutate(Property_ownership = ifelse(Tenure=="Freehold",Tenure,"Leasehold"))%>%
+  mutate(Completion_date = as.numeric(ifelse(Completion.Date=="Uncompleted",substr(Tenure, nchar(Tenure)-3, nchar(Tenure)),Completion.Date)))%>%
+  mutate(Transaction_date = as.numeric(substr(Date,1,4)))%>%
+  mutate(Building_age = Transaction_date - Completion_date)%>%
+  mutate_at(c("Type.of.Sale","Type.of.Area","Property.Type","Postal.District","min_travel_time_work_region","PLN_AREA_N","Property_ownership","month_year","BUILDING"),as.factor)%>%
+  select(where(is.numeric)| where(is.factor) | where(is.logical))%>%
+  select(c("log_price_psm","Area..SQM.","Postal.District","busStops.within.200m","trainExits.within.400m","Floor.Level","min_distance_school_car","min_distance_school_walk","min_travel_time_work","betweeness_centrality","closeness_centrality","amenities..high_value_amenity..within.400m","amenities..negative_externality..within.400m","amenities..neutral..within.400m","malls.within.400m","Building_age","Type.of.Sale","Type.of.Area","Property.Type","PLN_AREA_N","min_travel_time_work_region","flood_bin","Property_ownership","within_1km_school_car","within_2km_school_car","within_1km_school_walk","within_2km_school_walk","Is.parks.within.400m","month_year","BUILDING"))
+    
+# rename columns
+names(transaction_df) <- c("log_price_psm","Area_SQM","Postal_district","busStops_within_200m","trainExits_within_400m","Floor_level","min_distance_school_car","min_distance_school_walk","min_travel_time_work","betweeness_centrality","closeness_centrality","amenities_high_value_within_400m","amenities_negative_within_400m","amenities_neutral_within_400m","malls_within_400m","Building_age","Type_of_Sale","Type_of_Area","Property_Type","PLN_AREA_N","min_travel_time_work_region","flood_bin","Property_ownership","within_1km_school_car","within_2km_school_car","within_1km_school_walk","within_2km_school_walk","parks_within_400m","month_year","BUILDING")
+transaction_df 
+```
+
+
+
+# Modelling approaches
+
+## using binned flood exposure
+
+```{r}
+names(transaction_df)
+```
+### Fixed-effects OLS estimation (feols)
+```{r}
+flood_model_binned <-feols(log_price_psm~i(flood_bin, ref="0_4w")+Area_SQM+busStops_within_200m+trainExits_within_400m+Floor_level+min_distance_school_car+min_distance_school_walk+min_travel_time_work+betweeness_centrality+closeness_centrality+amenities_high_value_within_400m+amenities_negative_within_400m+amenities_neutral_within_400m+malls_within_400m+Building_age+Type_of_Sale+Type_of_Area+Property_Type+min_travel_time_work_region+Property_ownership+within_1km_school_car+within_2km_school_car+within_1km_school_walk+within_2km_school_walk+parks_within_400m | Postal_district+BUILDING+month_year, cluster = ~Postal_district, data=transaction_df)
+```
+```{r}
+flood_model_binned
+```
+```{r}
+summary(flood_model_binned)
+```
+
+```{r}
+model_summary <- summary(flood_model_binned)
+class(model_summary)
+```
+
+```{r}
+write.csv(etable(flood_model_binned), file.path(getwd(),"Exported_Data","fixed_effect_model.csv"))
+```
+
+[Singapore Districts and their Origins](https://www.fraxtor.com/singapore-districts-and-their-origins/#:~:text=Although%20this%20system%20is%20no,%2C%2026%2C%2027%2C%2028.)
+
+- See map of postal district
+
+- This system was changed in 1979 to have four-digit postal codes, which included the district number followed by sector numbers.
+
+- Singapore is also divided into three regions: the Core Central Region (CCR), Rest of Central Region (RCR), and Outside Central Region (OCR). The CCR is made up of districts 1, 2, 6, 9, 10, 11; the RCR consists of districts 3, 4, 5, 7, 8, 12, 13, 14, 15, 20; the OCR is made up of the other districts which are 16, 17, 18,19, 21, 22, 23, 24, 25, 26, 27, 28.
+
+```{r}
+length(unique(flood_residential_transaction$Postal.District))
+```
+
