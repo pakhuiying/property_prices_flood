@@ -1,6 +1,6 @@
 amenities_dict = amenity_category_map = {
     'parking': 'neutral',
-    'fast_food': 'high_value_amenity',
+    'fast_food': 'neutral',
     'cafe': 'high_value_amenity',
     'food_court': 'high_value_amenity',
     'bank': 'neutral',
