@@ -1,8 +1,9 @@
 import numpy as np
 import pandas as pd
 import copy
+import geopandas as gpd
 
-def get_drainage_period(df_subset, construction_period=6):
+def get_drainage_period(df_subset, sale_date_column="Sale_Date",construction_period=6):
     """ 
     Args:
         df_subset (pd.DataFrame) refers to the specific project name that have/will undergo(ne) a specific drainage work
@@ -12,7 +13,7 @@ def get_drainage_period(df_subset, construction_period=6):
         pd.Series
     """
     # make sure the df_subset is sorted by date
-    df_subset = df_subset.sort_values(by="Sale_Date")
+    df_subset = df_subset.sort_values(by=sale_date_column)
     # identify rows which coincides with drainage works
     drainage_entries = df_subset["work_categ"].notna()
     if drainage_entries.sum() > 0:
@@ -38,9 +39,9 @@ def get_drainage_period(df_subset, construction_period=6):
         first_construction_date = drainage_construction_start.values[0]
 
         # identify rows before construction start date
-        drainage_period.loc[df_subset["Sale_Date"] < first_construction_date] = "before" 
+        drainage_period.loc[df_subset[sale_date_column] < first_construction_date] = "before" 
         # assign as construction if sale date is between drainage completion and construction start
-        drainage_period.loc[(df_subset["Sale_Date"]>=drainage_construction_start) & (df_subset["Sale_Date"]<drainage_completion)] = "construction"
+        drainage_period.loc[(df_subset[sale_date_column]>=drainage_construction_start) & (df_subset[sale_date_column]<drainage_completion)] = "construction"
         # assign as after if sale date is after drainage completion
         # forward fill NA with after
         drainage_period = drainage_period.ffill()
@@ -50,7 +51,7 @@ def get_drainage_period(df_subset, construction_period=6):
         # if work categ rows are all NAs, it means no drainage work has been implemented (untreated), input "never"
         return pd.Series("never",index=df_subset.index)
     
-def get_work_categ(df_subset):
+def get_work_categ(df_subset, sale_date_column="Sale_Date"):
     """ 
     Args:
         df_subset (pd.DataFrame) refers to the specific project name that have/will undergo(ne) a specific drainage work
@@ -63,7 +64,7 @@ def get_work_categ(df_subset):
     drainage_entries = df_subset["work_categ"].notna()
     if drainage_entries.sum() > 0:
         # make sure the df_subset is sorted by date
-        df_subset = df_subset.sort_values(by="Sale_Date")
+        df_subset = df_subset.sort_values(by=sale_date_column)
         work_categ = df_subset['work_categ'].bfill()
         # create mask for rows with "after"
         mask = (df_subset["drainage_period"]=="after")|(df_subset["drainage_period"]=="before")
@@ -77,6 +78,8 @@ def get_work_categ(df_subset):
 def add_drainage_period(df,construction_period=6):
     """                             
     assign before, construction, after, never based on transaction_date and drainage work_date
+    Args:
+        df (pd.DataFrame): dataframe after merging drainage period to residential df
     Returns:
         pd.DataFrame with added columns describing the stages of drainage work and drainage type
     """
@@ -90,3 +93,98 @@ def add_drainage_period(df,construction_period=6):
     df_copy.loc[work_categ.index,"work_categ"] = work_categ["work_categ"]
     
     return df_copy
+
+def get_drainage_density_df(drain_shp,planningArea_shp,planningArea_column="PLN_AREA_N", 
+                         plot = True,ax=None,save_fp=None):
+    """
+    calculate drainage density (km/km2) for each planning area
+    Args:
+        drain_shp: shapefile to the drainage network
+        planningArea (gpd.GeoDataFrame): 
+    """
+    # ensure same crs
+    drain_shp = drain_shp.to_crs(planningArea_shp.crs)
+    # convert crs to cea projection for estimation in km
+    drain_shp = drain_shp.to_crs({'proj':'cea'})
+    planningArea_shp = planningArea_shp.to_crs({'proj':'cea'})
+    drainage_length_km = planningArea_shp['geometry'].apply(lambda x: gpd.clip(drain_shp,x)['geometry'].length.sum()/1000)
+    Area_km2 = planningArea_shp["geometry"].area/1e6
+    drainage_density = drainage_length_km/Area_km2
+    drainage_df = pd.DataFrame({planningArea_column: planningArea_shp[planningArea_column],"drainage_length_km": drainage_length_km, 
+                                "area_km2":Area_km2, "drainage_density (km/km2)": drainage_density})
+    
+    if plot:
+        planningArea_copy = copy.deepcopy(planningArea_shp)
+        planningArea_copy["drainage_length_km"] = drainage_length_km
+        planningArea_copy["Area_km2"] = Area_km2
+        planningArea_copy["drainage_density (km/km2)"] = drainage_density
+        planningArea_copy.plot(column="drainage_density (km/km2)",cmap='OrRd',ec="k",
+                               ax=ax,
+                               legend=True,
+                               legend_kwds={"label": r"Drainage density ($km/km^2$)", 
+                                            "orientation": "horizontal"},
+                               missing_kwds={
+                                    "color": "lightgrey",
+                                    "edgecolor": "black",
+                                    "hatch": "///",
+                                    "label": "Missing data"}
+                                    )
+    
+    if save_fp is not None:
+        drainage_df.to_csv(save_fp,index=False)
+
+    return drainage_df
+
+def get_drainage_density(df_subset,drain_df,sale_date_column = "Sale_Date",noData=0):
+    """ For each subzone, fill down the same drainage density
+    Args:
+        df_subset (pd.DataFrame) refers to the specific subzone df_subset
+        
+    Returns:
+        pd.Series
+    """
+    drainage_density_columns = ["year_drainage_density","drainage_length_km","area_km2","drainage_density (km/km2)"]
+    # filter drain_df to match the subzone
+    drain_df_subset = drain_df[drain_df["SUBZONE_N"]==df_subset["SUBZONE_N"].values[0]].sort_values(by="year_drainage_density").reset_index(drop=True)
+    if len(drain_df_subset) > 0: # means there is drain in the SUBZONE_N
+        drain_year = drain_df_subset["year_drainage_density"]
+        
+        df_subset = df_subset.sort_values(by=sale_date_column)
+        df_subset[drainage_density_columns] = df_subset[drainage_density_columns].ffill()#.fillna(noData)
+        # check if there's na
+        mask = df_subset[drainage_density_columns].isna()
+        if mask.all(axis=1).any():
+            # obtain the years where there is NA
+            year_NA = df_subset.loc[mask.all(axis=1),sale_date_column].dt.year
+            # extract the drain_df where drain years are lesser than minimum transaction year
+            min_year = year_NA.min()
+            year_mask = drain_year < min_year
+            drain_NA = drain_df_subset.loc[year_mask,drainage_density_columns]
+            # use idxmax to find the latest drain year that is smaller than transaction year
+            df_subset.loc[mask.all(axis=1),drainage_density_columns] = drain_NA.iloc[-1].values
+            return df_subset
+        else:
+            return df_subset
+    else: # means no drain in SUBZONE_N
+        df_subset[drainage_density_columns] = df_subset[drainage_density_columns].fillna(noData)
+        return df_subset
+
+        
+def add_drainage_density(df,drain_df,sale_date_column = "Sale_Date",noData=0):
+    """                             
+    add drainage density based on drainage density of specific year and to that subzone
+    # TODO: create a buffer of 200 m around drainage df to see if residential areas living near to drains are more/less prone to flooding, since canal overflowing often can lead to higher flood risk
+    Args:
+        df (pd.DataFrame): dataframe after merging drainage density to residential df
+        drain_df (pd.DataFrame): dataframe on drainage density (output from get_drainage_density_df)
+        noData (float): for subzones where there are no drainage length data before 2008, assign missing data as noData (default=0)
+    Returns:
+        pd.DataFrame with added columns describing the stages of drainage work and drainage type
+    """
+    df_copy = copy.deepcopy(df)
+    drainage_density_columns = ["year_drainage_density","drainage_length_km","area_km2","drainage_density (km/km2)"]
+    # drop True because "SUBZONE_N" already exists
+    df_copy[drainage_density_columns] = df_copy.groupby(["SUBZONE_N"]).apply(lambda i: get_drainage_density(i,drain_df,sale_date_column = sale_date_column,noData=noData)).reset_index(drop=True)[drainage_density_columns]
+
+    return df_copy
+

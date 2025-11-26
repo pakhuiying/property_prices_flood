@@ -136,14 +136,13 @@ class GetServiceArea:
         node_points = [Point((data["x"], data["y"])) for node, data in subgraph.nodes(data=True)]
         if len(node_points) <= 2:
             raise ValueError(f"Number of nodes less than 2: {len(node_points)}")
-        bounding_poly = gpd.GeoSeries(node_points).unary_union.convex_hull
+        bounding_poly = gpd.GeoSeries(node_points).union_all().convex_hull
         return bounding_poly
 
     def get_serviceArea_polygons(self, nodes_list):
         """ 
         Args:
-            bus_radius (float): walking distance in metres from the nearest bus stops
-            train_radius (float): walking distance in metres from the nearest train stops
+            nodes_list (list of int): list of nodes ID to obtain service area around each node, given a walking radius
         Returns:
             gpd.GeoDataFrame: polygon collection in a gdf, where each polygon represents the service area around each point
         """
@@ -159,7 +158,8 @@ class GetServiceArea:
                 isochrone_polys.append(bus_poly)
                 # break
             except Exception as e:
-                pass
-                # print(f'{node}: {e}')
+                isochrone_polys.append(None)
+                # pass
+                print(f'{node}: {e}')
 
-        return gpd.GeoDataFrame(geometry=isochrone_polys, crs=self.crs)
+        return gpd.GeoDataFrame(data=nodes_list,geometry=isochrone_polys, crs=self.crs)
