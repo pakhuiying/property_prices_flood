@@ -33,8 +33,8 @@ def add_mrt_buffer(df_property, df_train,
                    construction_period = 6):
     """
     Args:
-        df_property (pd.DataFrame): df describing property transaction info and property attributes
-        df_train (pd.DataFrame): df describing train lines, code, and opening dates and buffer of 400m radius
+        df_property (gpd.GeoDataFrame): df describing property transaction info and property attributes
+        df_train (gpd.GeoDataFrame): df describing train lines, code, and opening dates and buffer of 400m radius
     Returns:
         pd.DataFrame: that adds columns describing number of existing and upcoming train stns and their mrt lines per transaction record
     """

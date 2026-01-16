@@ -10,6 +10,7 @@ import geopandas as gpd
 import helper_functions.serviceArea as serviceArea
 import helper_functions.road_raising_works as RoadRaisingWorks
 import helper_functions.drainage_work as DrainageWork
+import helper_functions.residential_attributes as ResidentialAttributes
 import copy
 
 # filepath variables
@@ -42,6 +43,9 @@ MALLS_FP = os.path.join(os.getcwd(),"Data",'SG_malls.geojson')
 PARKS_FP = r"C:\Users\hypak\OneDrive - Singapore Management University\Documents - Heat Risk Index Development\Data\Parks\NParksParksandNatureReserves.geojson"
 MRT_FP = r"Exported_Data\MRT_opening\MRT_stations_opening.csv"
 
+# HDB resale data
+HDB_RESALE_RESIDENTIAL_FP = r"Exported_Data\Resale_prices_2014_2024.csv"
+
 def get_private_residential_df(fp):
     residential_df = pd.read_csv(fp)
     # columns to change to numeric
@@ -53,8 +57,28 @@ def get_private_residential_df(fp):
     residential_df["year"] = residential_df['Sale Date'].dt.year.astype(int)
     residential_df["month"] = residential_df['Sale Date'].dt.month.astype(int)
     # rename columns
-    rename_columns = {"Planning Region": "REGION_N", "Planning Area":"PLN_AREA_N","Sale Date":"Sale_Date"}
+    rename_columns = {"Planning Region": "REGION_N", 
+                      "Planning Area":"PLN_AREA_N",
+                      "Sale Date":"Sale_Date",
+                      "Project Name": "Building Name", # turns out that the original project name is very similar to address (almost exactly the same)
+                      "BUILDING": "Project Name"} # turns out that building is actually the project name
     residential_df = residential_df.rename(columns=rename_columns)
+
+    # get building name from address
+    residential_df["Building Name"] = residential_df["Address"].apply(lambda x: ResidentialAttributes.get_building_name(x))
+    # simplify tenure type to just freehold and lease hold
+    tenure_mask = (residential_df['Tenure'] != 'Freehold')
+    residential_df.loc[tenure_mask,'Tenure'] = 'Leasehold'
+    # get building age at the time of transaction sale
+    residential_df['Building Age'] = ResidentialAttributes.get_building_age(residential_df['Completion Date'], residential_df['year'])
+    # simplify sale types, Consolidates New & Sub Sale
+    residential_df['Type of Sale'] = residential_df['Type of Sale'].astype(str).apply(lambda x: ResidentialAttributes.get_sale_type(x))
+    # simplify Property type, Consolidates condominium etc, and consolidates landed
+    residential_df['Property Type'] = residential_df['Property Type'].astype(str).apply(lambda x: ResidentialAttributes.get_property_type(x))
+    # get floor number from address
+    residential_df['Floor_level'] = residential_df.apply(lambda x: ResidentialAttributes.get_floor_number(x),axis=1)
+    # check if unit is ground floor. Assume that for condo/apartment, all level 1 are ground floor units
+    residential_df['is_ground_floor'] = residential_df['Floor_level'] < 2
     # strip leading and trailing white spaces from PLN_AREA_N because Changi has trailing white spaces
     residential_df['PLN_AREA_N'] = residential_df['PLN_AREA_N'].str.strip()
     # drop rows with missing longitude and latitude because they are either land or enbloc properties - removal of 494 rows
@@ -64,6 +88,45 @@ def get_private_residential_df(fp):
                                                 geometry=gpd.points_from_xy(residential_df['LONGITUDE'], residential_df['LATITUDE']), 
                                                 crs="EPSG:4326")
     return residential_df
+
+def get_hdb_residential_df(fp):
+    resale_prices_df = pd.read_csv(fp)
+    # rename columns
+    rename_columns = {"month":"month_year",
+                      "flat_type":"Property Type",
+                      "street_name": "Project Name",
+                      "storey_range": "Floor_level",
+                      "floor_area_sqm": "Area (SQM)",
+                      "resale_price": "Transacted Price ($)",
+                      "ADDRESS":"Address"
+                      }
+    resale_prices_df = resale_prices_df.rename(columns=rename_columns)
+    # create year and month from month_year column
+    resale_prices_df[['year','month']] = resale_prices_df["month_year"].str.split('-', expand=True)
+    resale_prices_df[['year','month']] = resale_prices_df[['year','month']].apply(lambda x: pd.to_numeric(x,errors="coerce"))
+    # create building name based on block number and street name... or you could just use postal code
+    resale_prices_df['Building Name'] = resale_prices_df[['block',"Project Name"]].agg(' '.join, axis=1) # TODO: can be Building Name
+    # recategorise flat model
+    resale_prices_df['flat_model'] = resale_prices_df['flat_model'].apply(lambda x: ResidentialAttributes.get_recategorised_flat_model(x))
+    # estimate building age
+    resale_prices_df['Building Age'] = resale_prices_df['remaining_lease'].apply(lambda x: ResidentialAttributes.get_hdb_building_age(x,lease_max_year = 99))
+    # categorise into floor categories: low (<3), middle (4-10), high (>10)
+    resale_prices_df['Floor_level'] = pd.cut(resale_prices_df['Floor_level'].apply(lambda x: int(x.split(' ')[0])),
+        bins = [0, 3, 10, np.inf], labels = ['low','middle','high'])
+    # convert month_year to Sale Date
+    resale_prices_df['Sale_Date'] = pd.to_datetime(resale_prices_df['month_year'],format="%Y-%m",errors="coerce")
+    # check if unit is ground floor. Assume that if flat's lease commence_date is before 1969 and on the low units, then it could be ground floor
+    resale_prices_df['is_ground_floor'] = resale_prices_df.apply(lambda x: (x['lease_commence_date']<1969) and (x['Floor_level']=='low'),axis=1)
+    # drop rows with missing longitude and latitude because they are either land or enbloc properties - removal of 494 rows
+    resale_prices_df = resale_prices_df.dropna(subset=['LONGITUDE','LATITUDE'])
+    # convert cordinates to point geometry
+    resale_prices_df = gpd.GeoDataFrame(resale_prices_df, 
+                                                geometry=gpd.points_from_xy(resale_prices_df['LONGITUDE'], resale_prices_df['LATITUDE']), 
+                                                crs="EPSG:4326")
+    # filter df to get resales from year 2014 onwards
+    resale_prices_df = resale_prices_df[resale_prices_df["year"]>=2014]
+    # TODO: spatial join with planning area and subzone shp file
+    return resale_prices_df
 
 # def get_flood_df(fp):
 #     flood_df = pd.read_csv(fp)
@@ -101,7 +164,7 @@ def get_flooding_hotspot(fp):
     rename_columns = {"year":"Flood_Hotspot_Date","flooded_lo":"flooded_locations","latitude":"LATITUDE","longitude":"LONGITUDE"}
     flooding_hotspot = flooding_hotspot.rename(columns=rename_columns)
     # convert to datetime
-    flooding_hotspot["Flood_Hotspot_Date"] = pd.to_datetime(flooding_hotspot["Flood_Hotspot_Date"],format="%b-%y",errors="coerce")
+    flooding_hotspot["Flood_Hotspot_Date"] = pd.to_datetime(flooding_hotspot["Flood_Hotspot_Date"],format="%b %Y",errors="coerce")
     flooding_hotspot['year'] = flooding_hotspot["Flood_Hotspot_Date"].dt.year
     flooding_hotspot['month'] = flooding_hotspot["Flood_Hotspot_Date"].dt.month
     return flooding_hotspot
@@ -123,7 +186,7 @@ def get_drainage_works_df(fp):
     completed_drainage_works = completed_drainage_works.rename(columns={"Year":"year","Month":"month","Date":"Drainage_Date"})
     return completed_drainage_works
 
-def get_road_raising_buffer_df(G, fp, buffer_dist=400):
+def get_road_raising_buffer_df(G, fp, buffer_dist=500):
     """
     Args:
         G (networkx.Graph): graph representing the car network
@@ -149,7 +212,7 @@ def get_road_raising_buffer_df(G, fp, buffer_dist=400):
         return road_raising_df
     
 def get_road_raising_network_buffer_df(G, fp, reverse = False, depth_limit = 2, 
-                                     buffer_dist=400):
+                                     buffer_dist=500):
     """
     Args:
         G (networkx.Graph): graph representing the car network
@@ -177,7 +240,7 @@ def get_road_raising_network_buffer_df(G, fp, reverse = False, depth_limit = 2,
     else:
         return road_raising_works_df
     
-def get_drain_improvement_buffer_df(G, fp, buffer_dist=400):
+def get_drain_improvement_buffer_df(G, fp, buffer_dist=500):
     """
     Args:
         G (networkx.Graph): graph representing the car network
@@ -236,7 +299,7 @@ def get_drainage_density_df(fp):
     drainage_den_df = pd.read_csv(fp)
     return drainage_den_df
 
-def get_MRT_buffer_df(fp):
+def get_MRT_buffer_df(fp,buffer_dist=500):
     trainStations = pd.read_csv(fp)
     # remove stns that are not open yet
     trainStations = trainStations[~trainStations["mrt_line"].isin(["JE","JS","JW","CR"])]
@@ -245,7 +308,7 @@ def get_MRT_buffer_df(fp):
                                     geometry=gpd.points_from_xy(trainStations['LONGITUDE'], trainStations['LATITUDE']), 
                                                 crs="EPSG:4326")
     # calculate buffer for train station using euclidean distance
-    trainStations_400m_buffer = serviceArea.add_buffer(trainStations_400m,buffer_dist=400,plot=False)
+    trainStations_400m_buffer = serviceArea.add_buffer(trainStations_400m,buffer_dist=buffer_dist,plot=False)
     trainStations_400m.loc[trainStations_400m_buffer.index,"geometry"] = trainStations_400m_buffer
     trainStations_400m["opening_date"] = pd.to_datetime(trainStations_400m["opening_date"])
     return trainStations_400m

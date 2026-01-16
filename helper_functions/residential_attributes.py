@@ -9,27 +9,112 @@ import os
 import geopandas as gpd
 import helper_functions.serviceArea as serviceArea
 import copy
+from scipy.stats import rankdata
+
+# HDB resale helper functions
+def get_recategorised_flat_model(text):
+    """ apply column wise on flat model column. Consolidates flat model types"""
+    text = text.strip()
+    if re.match(r".*MAISONETTE.*|.*ADJOINED.*", text, flags=re.IGNORECASE):
+        return "maisonette/adjoined"
+    elif re.match(r".*GEN.*|MODEL\s+A\d+", text, flags=re.IGNORECASE):
+        return 'generation/Model A'
+    elif re.match(r".*PREMIUM.*|DBSS|^TYPE\s+S\d+|.*IMPROVE.*", text, flags=re.IGNORECASE):
+        return 'premium/DBSS/Type S1/2'
+    elif re.match(r".*TERRACE.*", text, flags=re.IGNORECASE):
+        return "terrace"
+    elif re.match(r".*SIMPLIFIED.*|.*2-ROOM.*", text, flags=re.IGNORECASE):
+        return "simplified/2-Room"
+    else:
+        return "standard"
+    
+def get_hdb_building_age(text,lease_max_year = 99):
+    """
+    apply column wise on flat model column. 
+    estimates building age using 99 years (default) - remaining lease
+    """
+    if isinstance(text, (float, int)):
+        return lease_max_year - text
+    else:
+        try:
+            text = text.strip()
+            m = re.match(r"^(.*?)\syear.*",text, flags=re.IGNORECASE)
+            if m:
+                lease = m.group(1) # part before year
+            else:
+                lease = text
+            return lease_max_year - int(lease.strip())
+        except:
+            return np.nan
+
+# private property helper functions
+
+def get_sale_type(text):
+    """ apply column wise on Type of Sale column. Consolidates New & Sub Sale"""
+
+    if re.search(r"New Sale|Sub Sale",text,re.IGNORECASE):
+        return "New/Sub Sale"
+    elif re.search(r"Resale",text,re.IGNORECASE):
+        return "Resale"
+    else:
+        return text
+    
+def get_property_type(text):
+    """
+    apply column wise on Property Type column. 
+    Consolidates condominium etc, and consolidates landed
+    """
+    if re.search(r"Condominium|Apartment|Executive Condominium",text,re.IGNORECASE):
+        return "Condominium/Apartment"
+    else:
+        return "Landed"
+
+def get_building_name(text):
+    """apply column wise on the address column. Assume everything infront the unit number is the building name"""
+    match = re.match(r"^(.*?)\s*#",text)
+    if match:
+        return match.group(1).strip()
+    else:
+        return text
+    
+def get_project_name(row):
+    """
+    # TODO: Deprecated function
+    for project name ==N.A., get address before unit unit number #
+    """
+    if row['Project Name'] == "N.A.":
+        match = re.match(r"^(.*?)\s*#",row['Address'])
+        if match:
+            return match.group(1).strip()
+        else:
+            return row['Address']
+    else:
+        return row['Address']
 
 def get_tenure(text):
-    """ apply column wise on Tenure column"""
+    """ 
+    # TODO: Deprecated function if using strong building or project FEs
+    apply column wise on Tenure column to get freehold or leasehold in its exact years
+    """
     match = re.search(r"(freehold)|(\d+\s+yrs\b)",text,re.IGNORECASE)
     if match:
         return match.group(0).strip().upper()
     else:
         return "None"
     
-def get_building_age(column,current_year=2025):
+def get_building_age(completion_year_column, sale_year_column):
     """ column wise operation on Completion Date column
     Returns:
         pd.Series
     """
-    completion_date = pd.to_numeric(column,errors="coerce").fillna(value=0)
-    return current_year - completion_date
+    completion_date = pd.to_numeric(completion_year_column,errors="coerce").fillna(value=0)
+    return sale_year_column - completion_date
 
 def get_floor_number(row):
     """use apply on address to get floor number"""
     # extract floor number based on Address
-    if row['Property Type'] in ['Apartment', 'Condominium', 'Executive Condominium']:
+    # if row['Property Type'] in ['Apartment', 'Condominium', 'Executive Condominium']:
+    if row['Property Type'] == 'Condominium/Apartment': # ensure that property type has been simplified!
         address = row['Address']
         result = re.search('#(.*)-',address)
         if result is None:
@@ -50,6 +135,19 @@ def get_floor_number(row):
     else:
         return 0 # zero floor to represent landed properties
 
+def get_ground_floor(row):
+    """
+    # TODO: Deprecated function because Property Type has been simplified
+    create a binary ground-floor variable - landed property are all ground floors, but some condos have residential units on the ground floor
+    """
+    
+    if row['Property Type'] in ['Terrace House', 'Semi-Detached House','Detached House']:
+        return True
+    elif row['Floor_level'] < 2: # properties that are apartments etc
+        return True
+    else:
+        return False 
+    
 def get_travel_time_to_destination(G_car,residential_df,residential_nodes_column_name,destination_df, destination_nodes_column_name):
     """ 
     Args:
@@ -58,7 +156,8 @@ def get_travel_time_to_destination(G_car,residential_df,residential_nodes_column
         residential_nodes_column_name (str): column name in residential_df that contains the nodesID
         destination_df (pd.DataFrame): dataframe containing workplace pln_area, coordinates and node_ID
         destination_nodes_column_name (str): column name in destination_df that contains the nodesID
-    Returns a DataFrame with the shortest travel time from property location to each workplace cluster in each planning area
+    Returns:
+        pd.DataFrame: with the shortest travel time from property location to each workplace cluster in each planning area
     """
     df_list = []
     for row_ix, row in destination_df.iterrows():
@@ -91,11 +190,68 @@ def get_travel_time_to_destination(G_car,residential_df,residential_nodes_column
 
     return travel_time_df
 
-def add_centrality_metrics(residential_df,residential_nodes_column_name='nodesID_property'):
+def get_travel_time_to_school(G,residential_df,residential_nodes_column_name,destination_df, destination_nodes_column_name):
+    """ 
+    Args:
+        G_car (networkx.Graph): graph representing the car network
+        residential_df (pd.DataFrame): DataFrame containing residential transaction
+        residential_nodes_column_name (str): column name in residential_df that contains the nodesID
+        destination_df (pd.DataFrame): dataframe containing school location, coordinates and node_ID
+        destination_nodes_column_name (str): column name in destination_df that contains the nodesID
+    Returns:
+        pd.DataFrame: with the shortest travel time from property location to each top primary school
+    """
+    df_list = []
+    for row_ix, row in destination_df.iterrows():
+        sch = row['School Name']
+        workplace_node = row[destination_nodes_column_name]
+        shortest_time = nx.shortest_path_length(G, source=None, target=workplace_node, weight='length') # keys are all nodes in G, values are travel time to target
+        shortest_time_property_workplace = []
+        for ix in residential_df.index:
+            nodes_key = residential_df.loc[ix, residential_nodes_column_name]
+            address = residential_df.loc[ix, "Address"]
+            date = residential_df.loc[ix, "Sale_Date"]
+            try:
+                shortest_time_property_workplace.append({residential_nodes_column_name: nodes_key, f'{sch}_distance':shortest_time[nodes_key],
+                                                         'Address':address, "Sale_Date":date})
+            except:
+                shortest_time_property_workplace.append({residential_nodes_column_name: nodes_key, f'{sch}_distance':np.nan,
+                                                         'Address':address, "Sale_Date":date})
+
+        df_travel_time = pd.DataFrame(shortest_time_property_workplace)
+        df_list.append(df_travel_time)
+
+    # merge all dataframes, combining on nodesID_property
+    travel_time_df = pd.concat([d.set_index([residential_nodes_column_name,"Address","Sale_Date"]) for d in df_list], axis=1, join='outer').reset_index()
+    
+    oneKm_thresh = 1000 # 1km threshold
+    twoKm_thresh = 2000 # 2km threshold
+    # school columns
+    school_columns = travel_time_df.columns[3:] # first 3 columns are property attributes
+    # check if there are any values less than 1 km or 2km, then add a boolean column
+        
+    travel_time_df['within_1km'] = travel_time_df[school_columns].apply(lambda x: x<oneKm_thresh, axis=1).any(axis=1)
+    travel_time_df['within_2km'] = travel_time_df[school_columns].apply(lambda x: x<twoKm_thresh, axis=1).any(axis=1)
+    # minimum distance (closest sch) to top 50 primary schools
+    travel_time_df['min_distance'] = travel_time_df[school_columns].min(axis=1)
+    return travel_time_df
+
+
+# travel_time_school_walk = get_travel_time_to_school(G_walk,residential_df,'nodesID_property',
+#                                                      topPrimarySch, # destination are top 50 primary schools
+#                                                      destination_nodes_column_name='nodesID_school_walk')
+# travel_time_school_car = get_travel_time_to_school(G_car,residential_df,'nodesID_property',
+#                                                      topPrimarySch, # destination are top 50 primary schools
+#                                                      destination_nodes_column_name='nodesID_school_car')
+
+
+def add_centrality_metrics(residential_df,standardise=True,
+                           residential_nodes_column_name='nodesID_property'):
     """
     Args:
         residential_df (pd.DataFrame): DataFrame containing residential transaction
         residential_nodes_column_name (str): column name in residential_df that contains the nodesID
+        standardise (bool): whether to standardise the betweeness and closeness centrality. Standardisation method using fractional rank_i/N
     Returns:
         pd.DataFrame: add additional columns that describes centrality metrics to residential_df
     """
@@ -103,9 +259,15 @@ def add_centrality_metrics(residential_df,residential_nodes_column_name='nodesID
     betweeness_centrality = utils.load_pickle(r"Data\Gcar_node_betweeness_centrality.pkl")
     closeness_centrality = utils.load_pickle(r"Data\Gcar_node_closeness_centrality.pkl")
     # print("Number of centrality nodes: ", len(list(betweeness_centrality)))
+
     betweeness_centrality = pd.DataFrame({residential_nodes_column_name: list(betweeness_centrality),'betweeness_centrality':list(betweeness_centrality.values())})
     closeness_centrality = pd.DataFrame({residential_nodes_column_name: list(closeness_centrality),'closeness_centrality':list(closeness_centrality.values())})
     residential_df_copy  = reduce(lambda  left,right: pd.merge(left,right),[residential_df_copy ,betweeness_centrality,closeness_centrality])
+    if standardise:
+        # return fractional rank
+        N = len(residential_df_copy)
+        residential_df_copy['betweeness_centrality'] = rankdata(residential_df_copy['betweeness_centrality'])/N
+        residential_df_copy['closeness_centrality'] = rankdata(residential_df_copy['closeness_centrality'])/N
     return residential_df_copy 
 
 def get_malls(G_walk,malls_df, radius=400, plot=True):
@@ -151,7 +313,7 @@ def add_parks(residential_df, park_df, radius=400, plot=True):
     """
     Args:
         residential_df (pd.DataFrame): DataFrame containing residential transaction
-        park_df (pd.DataFrame): df is linked to parks_df = NParksParksandNatureReserves.geojson
+        park_df (gpd.GeoDataFrame): df is linked to parks_df = NParksParksandNatureReserves.geojson
         radius (float): buffer radius
     Returns:
         pd.Dataframe: dataframe describing additional columns that describe if residential is within 400m radius of a park
