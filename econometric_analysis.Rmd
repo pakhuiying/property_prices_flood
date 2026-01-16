@@ -86,6 +86,10 @@ summary(flood_model_binned)
 model_summary <- summary(flood_model_binned)
 class(model_summary)
 ```
+```{r}
+etable(flood_model_binned)
+```
+
 
 ```{r}
 write.csv(etable(flood_model_binned), file.path(getwd(),"Exported_Data","fixed_effect_model.csv"))
