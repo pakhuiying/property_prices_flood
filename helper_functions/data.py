@@ -98,18 +98,20 @@ def get_hdb_residential_df(fp):
                       "storey_range": "Floor_level",
                       "floor_area_sqm": "Area (SQM)",
                       "resale_price": "Transacted Price ($)",
-                      "ADDRESS":"Address"
+                    #   "ADDRESS":"Address"
                       }
     resale_prices_df = resale_prices_df.rename(columns=rename_columns)
     # create year and month from month_year column
     resale_prices_df[['year','month']] = resale_prices_df["month_year"].str.split('-', expand=True)
     resale_prices_df[['year','month']] = resale_prices_df[['year','month']].apply(lambda x: pd.to_numeric(x,errors="coerce"))
     # create building name based on block number and street name... or you could just use postal code
-    resale_prices_df['Building Name'] = resale_prices_df[['block',"Project Name"]].agg(' '.join, axis=1) # TODO: can be Building Name
+    resale_prices_df['Building Name'] = resale_prices_df[['block',"Project Name"]].agg(' '.join, axis=1) # can be Building Name
     # recategorise flat model
     resale_prices_df['flat_model'] = resale_prices_df['flat_model'].apply(lambda x: ResidentialAttributes.get_recategorised_flat_model(x))
     # estimate building age
     resale_prices_df['Building Age'] = resale_prices_df['remaining_lease'].apply(lambda x: ResidentialAttributes.get_hdb_building_age(x,lease_max_year = 99))
+    # since hdb resale do not have exact floor level, we will use the rae floor level range to create address
+    resale_prices_df['Address'] = resale_prices_df[['Building Name','Floor_level']].agg(' '.join, axis=1)
     # categorise into floor categories: low (<3), middle (4-10), high (>10)
     resale_prices_df['Floor_level'] = pd.cut(resale_prices_df['Floor_level'].apply(lambda x: int(x.split(' ')[0])),
         bins = [0, 3, 10, np.inf], labels = ['low','middle','high'])

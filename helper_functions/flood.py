@@ -62,18 +62,20 @@ def get_flood_within_months(df_subset,sale_date_column="Sale_Date",months_after_
     return has_flood_within_months
 
 def add_flood_within_months(df,sale_date_column="Sale_Date",months_after_flood=6,
-                            groupby_column=["SUBZONE_N"]):
+                            groupby_column=["SUBZONE_N"],
+                            drop_duplicate_column = ["Project Name","Address","Sale_Date"]):
     """
     Assign True/False if transaction occurs within 6 months of flood for each groupby_column
     Args:
         df (pd.DataFrame): dataframe after merging flood_df to residential df
         groupby_column (list of str): column to split the df by to examine for each specific location e.g. subzone, or building, or project name
+        drop_duplicate_column (list of str): culumns from where to identify duplicates and drop duplicate rows
     Returns:
         pd.DataFrame with added columns describing True/False if transaction occurs within 6 months of flood
     """
     df_copy = copy.deepcopy(df)
     # drop duplicates which occur because multiple flood locations in the same subzone can happen during the same day
-    df_copy = df_copy.drop_duplicates(subset=["Project Name","Address","Sale_Date"])
+    df_copy = df_copy.drop_duplicates(subset=drop_duplicate_column)
     df_copy[f"within_{months_after_flood}_months_post_flood"] = pd.Series(False,index=df.index,name=f"within_{months_after_flood}_months_post_flood")
     flood_within_months = df_copy.groupby(groupby_column).apply(lambda x: get_flood_within_months(x,sale_date_column=sale_date_column,months_after_flood=months_after_flood)).reset_index(level=[0])
     df_copy.loc[flood_within_months.index,f"within_{months_after_flood}_months_post_flood"] = flood_within_months[f"within_{months_after_flood}_months_post_flood"]
@@ -164,21 +166,24 @@ def get_weeks_since_flood(df_subset,sale_date_column="Sale_Date",fillna=np.nan):
     return weeks_since_flood
 
 
-def add_weeks_since_flood(df,sale_date_column="Sale_Date", groupby_column=["SUBZONE_N"],fillna=np.nan):
+def add_weeks_since_flood(df,sale_date_column="Sale_Date", 
+                          groupby_column=["SUBZONE_N"],
+                          drop_duplicate_column = ["Project Name","Address","Sale_Date"],
+                          fillna=np.nan):
     """
-    Assign True/False if transaction occurs within 6 months of flood
+    calculates weeks (continuous variable) since flood. Use pre-2014 flood data to identify if flood has occured pre-2014, otherwise, assign fillna value
     Args:
         df (pd.DataFrame): dataframe after merging flood_df to residential df
         groupby_column (list of str): column to split the df by to examine for each specific location e.g. subzone, or building, or project name
+        drop_duplicate_column (list of str): culumns from where to identify duplicates and drop duplicate rows
         fillna (np.nan or int): value for records that did not have any floods throughout the observation period from 2012-2024
     Returns:
-        pd.DataFrame with added columns describing True/False if transaction occurs within 6 months of flood
+        pd.DataFrame with added columns calculates weeks (continuous variable) since flood pre Sale Date
     """
     df_copy = copy.deepcopy(df)
     # drop duplicates which occur because multiple flood locations in the same subzone can happen during the same day
-    df_copy = df_copy.drop_duplicates(subset=["Project Name","Address","Sale_Date"])
+    df_copy = df_copy.drop_duplicates(subset=drop_duplicate_column)
     df_copy["weeks_since_flood"] = pd.Series(fillna,index=df.index,name=f"weeks_since_flood")
     weeks_since_flood = df_copy.groupby(groupby_column).apply(lambda x: get_weeks_since_flood(x,sale_date_column=sale_date_column,fillna=fillna)).reset_index(level=[0])
-    # TODO: get_weeks since flood returns a dataframe, reset level accordingly!
     df_copy.loc[weeks_since_flood.index,"weeks_since_flood"] = weeks_since_flood["weeks_since_flood"]
     return df_copy

@@ -73,11 +73,12 @@ def get_drainage_period(df_subset, sale_date_column="Sale_Date",construction_per
         # assign as after if sale date is after drainage completion
         # forward fill NA with after
         drainage_period = drainage_period.ffill()
+        drainage_period.name = "drainage_period"
         return drainage_period
     
     else:
         # if work categ rows are all NAs, it means no drainage work has been implemented (untreated), input "never"
-        return pd.Series("never",index=df_subset.index)
+        return pd.Series("never",index=df_subset.index, name="drainage_period")
     
 def get_work_categories(df_subset, sale_date_column="Sale_Date"):
     """ 
@@ -115,12 +116,14 @@ def add_drainage_period(df,construction_period=6,groupby_column=["Project Name"]
     df_copy = copy.deepcopy(df)
     df_copy["drainage_period"] = pd.Series(np.nan,index=df_copy.index,dtype="string")
     # get drainage period for each project name with at least one drainage work
-    drainage_period = df_copy.groupby(groupby_column).apply(lambda x: get_drainage_period(x,construction_period=construction_period)).reset_index(level=[0],name="drainage_period")
+    # drainage_period = df_copy.groupby(groupby_column).apply(lambda x: get_drainage_period(x,construction_period=construction_period)).reset_index(level=[0],name="drainage_period")
+    drainage_period = df_copy.groupby(groupby_column).apply(lambda x: get_drainage_period(x,construction_period=construction_period)).reset_index(level=[0])
     df_copy.loc[drainage_period.index,"drainage_period"] = drainage_period["drainage_period"]
-    # get work_categories for each project name with at least one drainage work
-    work_categories = df_copy.groupby(groupby_column).apply(lambda x: get_work_categories(x)).reset_index(level=[0],name="work_categories")
+    # # get work_categories for each project name with at least one drainage work
+    # work_categories = df_copy.groupby(groupby_column).apply(lambda x: get_work_categories(x)).reset_index(level=[0],name="work_categories")
+    # df_copy.loc[work_categories.index,"work_categories"] = work_categories["work_categories"]
+    work_categories = df_copy.groupby(groupby_column).apply(lambda x: x['work_categories'].ffill().bfill().fillna("none")).reset_index(level=[0])
     df_copy.loc[work_categories.index,"work_categories"] = work_categories["work_categories"]
-    
     return df_copy
 
 def get_drainage_density_df(drain_shp,planningArea_shp,planningArea_column="PLN_AREA_N", 
