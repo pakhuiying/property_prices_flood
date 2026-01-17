@@ -28,7 +28,8 @@ G_WALK_FP = os.path.join(os.getcwd(),"Data","Road_Networks","SG_walk_network.gra
 # FLOOD_FP = r"Data\precipitation_levels_during_flood_events.csv"
 DRAINAGE_WORKS_FP = r"Exported_Data\drainage_works_roads_2012_2024.csv"
 FLOOD_FP = r"Data\flood_events_2013_2025.csv"
-FLOODING_HOTSPOT_FP = r"Data\flooding_hotspots_2011_2024.shp"
+# FLOODING_HOTSPOT_FP = r"Data\flooding_hotspots_2011_2024.shp"
+FLOODING_HOTSPOT_FP = r"Data\flooding_hotspots_2011_2025.csv"
 DRAINAGE_DENSITY_FP = os.path.join(r"Data","drainage_density_subzone.csv")
 TIDE_3M_FP = r"Data\water_depth_3m.shp"
 
@@ -160,10 +161,40 @@ def get_coastal_flood_prone(fp):
     tide_3m = gpd.read_file(fp)
     return tide_3m.union_all()
 
-def get_flooding_hotspot(fp):
-    flooding_hotspot = gpd.read_file(fp)
+def get_flooding_hotspot_shp(G, fp):
+    """
+    using coordinates, extract the corresponding flooded road using road network G
+    Args:
+        G (networkx.Graph): graph representing the car network
+        fp (str): filepath to csv containing the processed flooding_hotspot list.
+        flooding hotspot analysis can be found in drain_analysis.ipynb
+    Returns:
+        gpd.GeoDataframe: gdf of the extracted roads where flooding occurred
+    """
+    flooding_hotspot = pd.read_csv(fp)
+    G_edges = ox.graph_to_gdfs(G, edges=True,nodes=False)
+    flooding_hotspot_edges = ox.nearest_edges(G,flooding_hotspot['longitude'],flooding_hotspot['latitude'])
+    print("length of edges: ", len(flooding_hotspot_edges))
+    flooding_hotspot_edges = G_edges.loc[flooding_hotspot_edges]
+    print("length of edges: ", len(flooding_hotspot_edges))
+    # flooding_hotspot['geometry'] = flooding_hotspot_edges['geometry'].to_list()
+    flooding_hotspot = gpd.GeoDataFrame(data=flooding_hotspot,geometry=flooding_hotspot_edges['geometry'].to_list(),
+                                        crs="EPSG:4326")
+    return flooding_hotspot
+
+def get_flooding_hotspot(G, fp):
+    """
+    using coordinates, extract the corresponding flooded road using road network G
+    Args:
+        G (networkx.Graph): graph representing the car network
+        fp (str): filepath to csv containing the processed flooding_hotspot list.
+        flooding hotspot analysis can be found in drain_analysis.ipynb
+    Returns:
+        gpd.GeoDataframe: gdf of the extracted roads where flooding occurred
+    """
+    flooding_hotspot = get_flooding_hotspot_shp(G, fp)
     # rename columns
-    rename_columns = {"year":"Flood_Hotspot_Date","flooded_lo":"flooded_locations","latitude":"LATITUDE","longitude":"LONGITUDE"}
+    rename_columns = {"year":"Flood_Hotspot_Date","flooded_location":"flooded_locations","latitude":"LATITUDE","longitude":"LONGITUDE"}
     flooding_hotspot = flooding_hotspot.rename(columns=rename_columns)
     # convert to datetime
     flooding_hotspot["Flood_Hotspot_Date"] = pd.to_datetime(flooding_hotspot["Flood_Hotspot_Date"],format="%b %Y",errors="coerce")
@@ -171,8 +202,17 @@ def get_flooding_hotspot(fp):
     flooding_hotspot['month'] = flooding_hotspot["Flood_Hotspot_Date"].dt.month
     return flooding_hotspot
 
-def get_flooding_hotspot_buffer(fp,radius=200):
-    flooding_hotspot = get_flooding_hotspot(fp)
+def get_flooding_hotspot_buffer(G, fp,radius=200):
+    """
+    using coordinates, extract the corresponding flooded road using road network G, then put a buffer around it
+    Args:
+        G (networkx.Graph): graph representing the car network
+        fp (str): filepath to csv containing the processed flooding_hotspot list.
+        flooding hotspot analysis can be found in drain_analysis.ipynb
+    Returns:
+        gpd.GeoDataframe: gdf of the buffered extracted roads where flooding occurred
+    """
+    flooding_hotspot = get_flooding_hotspot(G, fp)
     flooding_hotspot_buffer = flooding_hotspot.copy()
     flooding_hotspot_buffer['geometry'] = serviceArea.add_buffer(flooding_hotspot,buffer_dist=radius, crs="EPSG:4326",plot=False)
     return flooding_hotspot_buffer
