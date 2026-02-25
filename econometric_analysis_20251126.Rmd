@@ -18,9 +18,11 @@ library(modelsummary)
 # Initialise FE and cluster parameters
 
 ```{r}
-fe_vars <- c("Building_Name","month_year")
+fe_vars <- c("Building_Name","month_year") #c("Building_Name","month_year") # or c("Project_Name","month_year")
 cluster_vars <- c("SUBZONE_N")
-y_var <- "log_price_PSM"
+y_var <-"log_price_PSM"  #or "log_price"
+# test flood exposure one at a time, not all together because then there would be multicollinearity
+hazard_var <- "within_6_months_post_flood" #"within_6_months_post_flood","within_12_months_post_flood","within_18_months_post_flood","weeks_since_flood"
 ```
 
 
@@ -31,7 +33,8 @@ y_var <- "log_price_PSM"
 # flood_residential_transaction <- file.path(getwd(),"Exported_Data","flood_residential_transaction_20251128.csv")
 
 # flood_residential_transaction_20260114.csv models the road raising network buffer
-flood_residential_fp <- file.path(getwd(),"Exported_Data","flood_residential_transaction_20260114-3.csv")
+flood_residential_fp <- file.path(getwd(),"Exported_Data",
+                                  "floodPrivateResidential_20260117_buffer200_networkDepth2_adaptationBuildingName.csv")
 flood_residential_transaction <- read.csv(flood_residential_fp)
 flood_residential_transaction
 
@@ -69,11 +72,13 @@ transaction_df <- flood_residential_transaction%>%
   mutate_at(c("Type_of_Sale","Type_of_Area","Property_Type","Tenure",
               "Postal_District","Postal_Sector",
               "PLN_AREA_N","SUBZONE_N","REGION_N",
-              "min_travel_time_work_region","stn_lines",
+              # "min_travel_time_work_region",
+              "stn_lines",
               "work_categories","drainage_period"),as.factor)%>%
   # convert to boolean
   mutate_at(c("within_6_months_post_flood","within_12_months_post_flood","within_18_months_post_flood",
-              "parks_within_400m","is_ground_floor","prone_to_high_tide","within_flooding_hotspot"),as.logical)%>%
+              # "parks_within_400m",
+              "is_ground_floor","prone_to_high_tide","within_flooding_hotspot"),as.logical)%>%
   # create month-year column as we want month_year to be the fixed effect
   mutate(month_year = as.factor(paste(month, year, sep = "_")))%>%
   # drop columns
@@ -89,15 +94,16 @@ transaction_df <- flood_residential_transaction%>%
             "Completion_Date",                              # absorbed by strong project/building FEs 
             "Postal_Code","Postal_District","Postal_Sector",# absorbed by strong project/building FEs
             "REGION_N","PLN_AREA_N",                        # absorbed by strong project/building FEs, use subzone for clustering residuals
-            "DOWNTOWN_CORE_travel_time","TAMPINES_travel_time",      # absorbed by strong project/building FEs
-            "WOODLANDS_travel_time","ANG_MO_KIO_travel_time",        # absorbed by strong project/building FEs
-            "JURONG_EAST_travel_time","min_travel_time_work_region", # absorbed by strong project/building FEs
-            "min_travel_time_work","sch_within_1km_car",             # absorbed by strong project/building FEs
-            "sch_within_2km_car","sch_min_distance_car",             # absorbed by strong project/building FEs
-            "sch_within_1km_walk","sch_within_2km_walk",             # absorbed by strong project/building FEs
+            # "DOWNTOWN_CORE_travel_time","TAMPINES_travel_time",      # absorbed by strong project/building FEs
+            # "WOODLANDS_travel_time","ANG_MO_KIO_travel_time",        # absorbed by strong project/building FEs
+            # "JURONG_EAST_travel_time","min_travel_time_work_region", # absorbed by strong project/building FEs
+            # "min_travel_time_work","sch_within_1km_car",             # absorbed by strong project/building FEs
+            # "sch_within_2km_car","sch_min_distance_car",             # absorbed by strong project/building FEs
+            # "sch_within_1km_walk","sch_within_2km_walk",             # absorbed by strong project/building FEs
             # "betweeness_centrality","closeness_centrality",          # absorbed by strong project/building FEs      
-            "sch_min_distance_walk","malls_within_400m",             # absorbed by strong project/building FEs
-            "parks_within_400m","DEM",                               # absorbed by strong project/building FEs
+            # "sch_min_distance_walk","malls_within_400m",             # absorbed by strong project/building FEs
+            # "parks_within_400m",
+            "DEM",                               # absorbed by strong project/building FEs
             "drainage_density_.km_km2."                              # can be removed since it is absorbed by month-year FE
             )            
          )
@@ -317,18 +323,19 @@ names(transaction_df)
 
 ```{r}
 model_0a_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality")),
-              interaction_vars =  interaction_combinations(
-                  hazards = c("within_6_months_post_flood","within_12_months_post_flood","within_18_months_post_flood",
-                              "weeks_since_flood"),
-                  vulnerability = c("within_flooding_hotspot")
-                  ),
-              interaction_sep = "*",
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "within_6_months_post_flood","within_12_months_post_flood",
+                                                           "within_18_months_post_flood","weeks_since_flood")),
+                                    interaction_vars =  interaction_combinations(
+                                      hazards = c(hazard_var),
+                                      vulnerability = c("within_flooding_hotspot")
+                                    ),
+                                    interaction_sep = "*",
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_0a_formula
 
 # model where fixed effects are project name and month_year
@@ -349,19 +356,20 @@ etable(model_0a)
 
 ```{r}
 model_0b_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type",
-                                                              "betweeness_centrality","closeness_centrality",
-                                                               "is_ground_floor","Floor_level")),
-              interaction_vars =  interaction_combinations(
-                  hazards = c("within_6_months_post_flood","within_12_months_post_flood","within_18_months_post_flood",
-                              "weeks_since_flood"),
-                  vulnerability = c("within_flooding_hotspot")
-                  ),
-              interaction_sep = "*",
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood","within_12_months_post_flood",
+                                                           "within_18_months_post_flood","weeks_since_flood")),
+                                    interaction_vars =  interaction_combinations(
+                                      hazards = c(hazard_var),
+                                      vulnerability = c("within_flooding_hotspot")
+                                    ),
+                                    interaction_sep = "*",
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_0b_formula
 
 # model where fixed effects are project name and month_year
@@ -386,19 +394,20 @@ names(transaction_df)
 
 ```{r}
 model_1a_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type","prone_to_high_tide",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "within_flooding_hotspot")),
-              interaction_vars =  interaction_combinations(
-                  hazards = c("within_6_months_post_flood","within_12_months_post_flood","within_18_months_post_flood",
-                              "weeks_since_flood"),
-                  vulnerability = c("is_ground_floor")
-                  ),
-              interaction_sep = "*",
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                         c("stn_lines","Property_Type","prone_to_high_tide",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "within_flooding_hotspot",
+                                                           "within_6_months_post_flood","within_12_months_post_flood",
+                                                           "within_18_months_post_flood","weeks_since_flood")),
+                                    interaction_vars =  interaction_combinations(
+                                      hazards = c(hazard_var),
+                                      vulnerability = c("is_ground_floor")
+                                    ),
+                                    interaction_sep = "*",
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_1a_formula
 
 # model where fixed effects are project name and month_year
@@ -420,14 +429,17 @@ etable(model_1a)
 
 ```{r}
 model_1b_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","is_ground_floor",
-                                                               "Floor_level","Property_Type",
-                                                               "within_flooding_hotspot",
-                                                               "betweeness_centrality","closeness_centrality")),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=c(setdiff(names(transaction_df)[c(1:18)],
+                                                           c("stn_lines","is_ground_floor",
+                                                             "Floor_level","Property_Type",
+                                                             "within_flooding_hotspot",
+                                                             "betweeness_centrality","closeness_centrality",
+                                                             "within_6_months_post_flood","within_12_months_post_flood",
+                                                             "within_18_months_post_flood","weeks_since_flood")),
+                                                   hazard_var),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_1b_formula
 
 # model where fixed effects are project name and month_year
@@ -452,21 +464,20 @@ etable(model_1b)
 
 ```{r}
 model_2a_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood",
-                                                               "betweeness_centrality","closeness_centrality")),
-              interaction_vars = interaction_combinations(
-                                            hazard=c("within_6_months_post_flood"),
-                                            vulnerability=c("Floor_level")),
-              interaction_sep = "*",
-              specified_interaction_vars = c("within_6_months_post_flood : prone_to_high_tide",
-                                             "within_6_months_post_flood : prone_to_high_tide : Floor_level"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                         c("stn_lines","Property_Type",
+                                                           "within_6_months_post_flood","within_12_months_post_flood",
+                                                           "within_18_months_post_flood","weeks_since_flood",
+                                                           "betweeness_centrality","closeness_centrality")),
+                                    interaction_vars = interaction_combinations(
+                                      hazard=c(hazard_var),
+                                      vulnerability=c("Floor_level")),
+                                    interaction_sep = "*",
+                                    specified_interaction_vars = c(sprintf("%s : prone_to_high_tide", hazard_var),
+                                                                   sprintf("%s : prone_to_high_tide : Floor_level", hazard_var)),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_2a_formula
 
 # model where fixed effects are project name and month_year
@@ -484,21 +495,20 @@ etable(model_2a)
 
 ```{r}
 model_2b_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood",
-                                                               "betweeness_centrality","closeness_centrality")),
-              interaction_vars = interaction_combinations(
-                                            hazard=c("within_6_months_post_flood"),
-                                            vulnerability=c("Floor_level")),
-              interaction_sep = "*",
-              specified_interaction_vars = c("within_6_months_post_flood : prone_to_high_tide",
-                                             "within_6_months_post_flood : prone_to_high_tide : Floor_level"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                         c("stn_lines","Property_Type",
+                                                           "within_6_months_post_flood","within_12_months_post_flood",
+                                                           "within_18_months_post_flood","weeks_since_flood",
+                                                           "betweeness_centrality","closeness_centrality")),
+                                    interaction_vars = interaction_combinations(
+                                      hazard=c(hazard_var),
+                                      vulnerability=c("Floor_level")),
+                                    interaction_sep = "*",
+                                    specified_interaction_vars = c(sprintf("%s : prone_to_high_tide",hazard_var),
+                                                                   sprintf("%s : prone_to_high_tide : Floor_level",hazard_var)),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_2b_formula
 
 # model where fixed effects are project name and month_year
@@ -528,19 +538,18 @@ etable(model_2b)
 
 ```{r}
 model_3_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood",
-                                                               "is_ground_floor","Floor_level",
-                                                               "betweeness_centrality","closeness_centrality")),
-              
-              specified_interaction_vars = c("within_6_months_post_flood",
-                                             "within_6_months_post_flood : prone_to_high_tide"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                   control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                        c("stn_lines","Property_Type",
+                                                          "within_6_months_post_flood","within_12_months_post_flood",
+                                                          "within_18_months_post_flood","weeks_since_flood",
+                                                          "is_ground_floor","Floor_level",
+                                                          "betweeness_centrality","closeness_centrality")),
+                                   
+                                   specified_interaction_vars = c(hazard_var,
+                                                                  sprintf("%s : prone_to_high_tide",hazard_var)),
+                                   fe_vars = fe_vars,
+                                   cluster_vars = cluster_vars
+  )
 model_3_formula
 
 # model where fixed effects are project name and month_year
@@ -562,26 +571,26 @@ etable(model_3)
 
 ```{r}
 model_4_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df)[c(1:18)],
-                                                             c("stn_lines","Property_Type",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood"
-                                                               )),
-              
-              specified_interaction_vars = c("within_6_months_post_flood",
-                                             "within_6_months_post_flood : betweeness_centrality",
-                                             "within_6_months_post_flood : closeness_centrality"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                   control_vars=setdiff(names(transaction_df)[c(1:18)],
+                                                        c("stn_lines","Property_Type",
+                                                          "within_6_months_post_flood","within_12_months_post_flood",
+                                                          "within_18_months_post_flood","weeks_since_flood"
+                                                        )),
+                                   
+                                   specified_interaction_vars = c(hazard_var,
+                                                                  sprintf("%s : betweeness_centrality",hazard_var),
+                                                                  sprintf("%s : closeness_centrality",hazard_var)),
+                                   fe_vars = fe_vars,
+                                   cluster_vars = cluster_vars
+  )
 model_4_formula
 
 # model where fixed effects are project name and month_year
 model_4 <- feols(
   model_4_formula$formula,
   cluster = model_4_formula$cluster,
-  data = transaction_df
+  data = transaction_df%>%
+    filter(Property_Type=="Landed")
 )
 summary(model_4)
 # display model outputs
@@ -593,28 +602,28 @@ etable(model_4)
 
 - does that even make sense? because if it's in a flood prone area that means flood adaptation hasnt been implemented. The effect of flood adaptation may already be absorbed in the non-flood prone area already
 - or it could be interpreted as exogenous impacts from flood adaptation works on flood prone area
-
+- TODO: Add interaction: Hazard x Vulnerability
 
 ```{r}
 model_5a_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              specified_interaction_vars = c("within_flooding_hotspot",
-                                             "work_categories : drainage_period",
-                                             # vulnerability
-                                            "within_flooding_hotspot : work_categories : drainage_period"
-                                            # "is_ground_floor : work_categories : drainage_period"
-                                            ),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                          control_vars=setdiff(names(transaction_df),
+                                                               c("stn_lines","Property_Type",
+                                                                 "betweeness_centrality","closeness_centrality",
+                                                                 "prone_to_high_tide",
+                                                                 "within_6_months_post_flood",
+                                                                 "within_12_months_post_flood", 
+                                                                 "within_18_months_post_flood",
+                                                                 "weeks_since_flood")),
+  
+                specified_interaction_vars = c("within_flooding_hotspot",
+                                               # "work_categories : drainage_period",
+                                               # vulnerability
+                                              "within_flooding_hotspot : work_categories : drainage_period"
+                                              # "is_ground_floor : work_categories : drainage_period"
+                                              ),
+                fe_vars = fe_vars,
+                cluster_vars = cluster_vars
+                )
 model_5a_formula
 
 # model where fixed effects are project name and month_year
@@ -632,22 +641,23 @@ etable(model_5a)
 
 ```{r}
 model_5b_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              specified_interaction_vars = c("within_flooding_hotspot",
-                                             "work_categories : drainage_period",
-                                            "within_flooding_hotspot : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    specified_interaction_vars = c(
+                                      "within_flooding_hotspot",
+                                                                   # "work_categories : drainage_period",
+                                                                   "within_flooding_hotspot : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_5b_formula
 
 # model where fixed effects are project name and month_year
@@ -665,23 +675,23 @@ etable(model_5b)
 
 ```{r}
 model_5c_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_flooding_hotspot",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              specified_interaction_vars = c("is_ground_floor",
-                                             "work_categories : drainage_period",
-                                            "within_6_months_post_flood : is_ground_floor : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    specified_interaction_vars = c("is_ground_floor",
+                                                                   # "work_categories : drainage_period",
+                                                                   "is_ground_floor : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_5c_formula
 
 # model where fixed effects are project name and month_year
@@ -699,22 +709,23 @@ etable(model_5c)
 
 ```{r}
 model_5d_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_flooding_hotspot",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              specified_interaction_vars = c("work_categories : drainage_period",
-                                            "within_6_months_post_flood : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    specified_interaction_vars = c(
+                                      # "work_categories : drainage_period",
+                                                                   "work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_5d_formula
 
 # model where fixed effects are project name and month_year
@@ -732,23 +743,23 @@ etable(model_5d)
 
 ```{r}
 model_5e_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_flooding_hotspot",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              
-              specified_interaction_vars = c("Floor_level",
-                                            "Floor_level : prone_to_high_tide : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    
+                                    specified_interaction_vars = c("Floor_level",
+                                                                   "Floor_level : prone_to_high_tide : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_5e_formula
 
 # model where fixed effects are project name and month_year
@@ -768,24 +779,24 @@ etable(model_5e)
 
 ```{r}
 model_5f_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_flooding_hotspot",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              
-              specified_interaction_vars = c("Floor_level",
-                                             "work_categories : drainage_period",
-                                            "Floor_level : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    
+                                    specified_interaction_vars = c("Floor_level",
+                                                                   # "work_categories : drainage_period",
+                                                                   "Floor_level : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_5f_formula
 
 # model where fixed effects are project name and month_year
@@ -808,22 +819,23 @@ etable(model_5f)
 
 ```{r}
 model_5g_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_flooding_hotspot",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              specified_interaction_vars = c("work_categories : drainage_period",
-                                            "prone_to_high_tide : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    specified_interaction_vars = c(
+                                      # "work_categories : drainage_period",
+                                                                   "prone_to_high_tide : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
 model_5g_formula
 
 # model where fixed effects are project name and month_year
@@ -838,34 +850,71 @@ summary(model_5g)
 etable(model_5g)
 ```
 
-### 5.4: How does adaptation moderate the effect of flood on prices by centrality
+### 5.4A: How does adaptation moderate the effect of flood on prices by centrality (for private non-landed properties)
 
 ```{r}
 model_5h_formula <- feols_formula(y_var = y_var,
-                                        control_vars=setdiff(names(transaction_df),
-                                                             c("stn_lines","Property_Type",
-                                                               "betweeness_centrality","closeness_centrality",
-                                                               "prone_to_high_tide",
-                                                               "within_flooding_hotspot",
-                                                               "is_ground_floor","Floor_level",
-                                                               "within_6_months_post_flood",
-                                                               "within_12_months_post_flood", 
-                                                               "within_18_months_post_flood",
-                                                               "weeks_since_flood")),
-
-              specified_interaction_vars = c("work_categories : drainage_period",
-                                            "betweeness_centrality : work_categories : drainage_period",
-                                            "closeness_centrality : work_categories : drainage_period"),
-              fe_vars = fe_vars,
-              cluster_vars = cluster_vars
-              )
-model_5g_formula
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    specified_interaction_vars = c(
+                                      # "work_categories : drainage_period",
+                                                               "betweeness_centrality : work_categories : drainage_period",
+                                                               "closeness_centrality : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
+model_5h_formula
 
 # model where fixed effects are project name and month_year
 model_5h <- feols(
   model_5h_formula$formula,
   cluster = model_5h_formula$cluster,
-  data = transaction_df
+  data = transaction_df%>%
+    filter(Property_Type == "Condominium/Apartment")
+)
+summary(model_5h)
+# display model outputs
+etable(model_5h)
+```
+### 5.4B: How does adaptation moderate the effect of flood on prices by centrality (for landed properties)
+
+```{r}
+model_5h_formula <- feols_formula(y_var = y_var,
+                                    control_vars=setdiff(names(transaction_df),
+                                                         c("stn_lines","Property_Type",
+                                                           "betweeness_centrality","closeness_centrality",
+                                                           "prone_to_high_tide",
+                                                           "within_flooding_hotspot",
+                                                           "is_ground_floor","Floor_level",
+                                                           "within_6_months_post_flood",
+                                                           "within_12_months_post_flood", 
+                                                           "within_18_months_post_flood",
+                                                           "weeks_since_flood")),
+                                    
+                                    specified_interaction_vars = c(
+                                      # "work_categories : drainage_period",
+                                                               "betweeness_centrality : work_categories : drainage_period",
+                                                               "closeness_centrality : work_categories : drainage_period"),
+                                    fe_vars = fe_vars,
+                                    cluster_vars = cluster_vars
+  )
+model_5h_formula
+
+# model where fixed effects are project name and month_year
+model_5h <- feols(
+  model_5h_formula$formula,
+  cluster = model_5h_formula$cluster,
+  data = transaction_df%>%
+    filter(Property_Type == "Landed")
 )
 summary(model_5h)
 # display model outputs
@@ -886,8 +935,8 @@ names(models_hazard_vul) <- paste0("(",c(1:length(models_hazard_vul)),")")
 
 modelsummary(models_hazard_vul, stars = TRUE)
 # export data
-modelsummary(models_hazard_vul, stars = TRUE, gof_omit = "IC|F|Log|AIC|BIC", output = 
-  file.path(getwd(),"Exported_Data","model_summaries",sprintf("models_hazard_vul_%s.docx",save_fp)))
+# modelsummary(models_hazard_vul, stars = TRUE, gof_omit = "IC|F|Log|AIC|BIC", output = 
+#   file.path(getwd(),"Exported_Data","model_summaries",sprintf("models_hazard_vul_%s.docx",save_fp)))
 ```
 
 ```{r}
