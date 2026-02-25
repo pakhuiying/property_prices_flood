@@ -31,7 +31,55 @@ def get_drainage_works_gdf(G, df):
     df_copy = gpd.GeoDataFrame(df_copy,geometry=df_copy["geometry"])
     return df_copy
 
-def get_drainage_period(df_subset, sale_date_column="Sale_Date",construction_period=6):
+# def get_drainage_period(df_subset, sale_date_column="Sale_Date",construction_period=6):
+#     """ 
+#     Args:
+#         df_subset (pd.DataFrame) refers to the specific project name that have/will undergo(ne) a specific drainage work
+#         e.g. residential_drainage[residential_drainage["Project Name"] == "ASCENTIA SKY]
+#         construction_period (float): number of months that the drainage work will last for
+#     Returns:
+#         pd.Series
+#     """
+#     # make sure the df_subset is sorted by date
+#     df_subset = df_subset.sort_values(by=sale_date_column)
+#     # identify rows which coincides with drainage works
+#     drainage_entries = df_subset["work_categories"].notna()
+#     if drainage_entries.sum() > 0:
+#         # create drainage period series
+#         drainage_period = pd.Series(np.nan,index=df_subset.index,dtype="string")
+#         drainage_period.loc[drainage_entries] = "construction"
+#         # shift drainage completion down by one to indicate after completion
+#         after_completion = drainage_period.shift(1)
+#         drainage_period.loc[after_completion=="construction"] = "after"
+#         # get drainage_date 
+#         # cannot use this because it will also pick up dates that are not drainage completion dates
+#         # drainage_date = pd.to_datetime(df_subset["year"].astype(str) + '-' + df_subset["month"].astype(str).str.zfill(2)+ '-28')
+#         # to get drainage completion date from ROAD_NAME_drainage, rest is na
+#         drainage_completion = pd.Series(np.nan,index=df_subset.index,dtype='datetime64[ns]')
+#         drainage_completion_date = df_subset.loc[drainage_entries,["year","month"]]
+#         drainage_completion.loc[drainage_entries] = pd.to_datetime(drainage_completion_date["year"].astype(str) + '-' + drainage_completion_date["month"].astype(str).str.zfill(2)+ '-28')
+        
+#         # backward fill drainage completion date so that NAs are filled with drainage completion date
+#         drainage_completion = drainage_completion.bfill()
+#         # get drainage construction date e.g. 6 months before completion date
+#         drainage_construction_start = drainage_completion - pd.DateOffset(months=construction_period)
+#         # get the first drainage construction start date
+#         first_construction_date = drainage_construction_start.values[0]
+
+#         # identify rows before construction start date
+#         drainage_period.loc[df_subset[sale_date_column] < first_construction_date] = "before" 
+#         # assign as construction if sale date is between drainage completion and construction start
+#         drainage_period.loc[(df_subset[sale_date_column]>=drainage_construction_start) & (df_subset[sale_date_column]<drainage_completion)] = "construction"
+#         # assign as after if sale date is after drainage completion
+#         # forward fill NA with after
+#         drainage_period = drainage_period.ffill()
+#         drainage_period.name = "drainage_period"
+#         return drainage_period
+    
+#     else:
+#         # if work categ rows are all NAs, it means no drainage work has been implemented (untreated), input "never"
+#         return pd.Series("never",index=df_subset.index, name="drainage_period")
+def get_drainage_period(df_subset, sale_date_column="Sale_Date"):
     """ 
     Args:
         df_subset (pd.DataFrame) refers to the specific project name that have/will undergo(ne) a specific drainage work
@@ -40,45 +88,58 @@ def get_drainage_period(df_subset, sale_date_column="Sale_Date",construction_per
     Returns:
         pd.Series
     """
-    # make sure the df_subset is sorted by date
+    # make sure the df_subset is sorted by date (from the oldest/earlier dates)
     df_subset = df_subset.sort_values(by=sale_date_column)
-    # identify rows which coincides with drainage works
-    drainage_entries = df_subset["work_categories"].notna()
-    if drainage_entries.sum() > 0:
-        # create drainage period series
-        drainage_period = pd.Series(np.nan,index=df_subset.index,dtype="string")
-        drainage_period.loc[drainage_entries] = "construction"
-        # shift drainage completion down by one to indicate after completion
-        after_completion = drainage_period.shift(1)
-        drainage_period.loc[after_completion=="construction"] = "after"
-        # get drainage_date 
-        # cannot use this because it will also pick up dates that are not drainage completion dates
-        # drainage_date = pd.to_datetime(df_subset["year"].astype(str) + '-' + df_subset["month"].astype(str).str.zfill(2)+ '-28')
-        # to get drainage completion date from ROAD_NAME_drainage, rest is na
-        drainage_completion = pd.Series(np.nan,index=df_subset.index,dtype='datetime64[ns]')
-        drainage_completion_date = df_subset.loc[drainage_entries,["year","month"]]
-        drainage_completion.loc[drainage_entries] = pd.to_datetime(drainage_completion_date["year"].astype(str) + '-' + drainage_completion_date["month"].astype(str).str.zfill(2)+ '-28')
-        
-        # backward fill drainage completion date so that NAs are filled with drainage completion date
-        drainage_completion = drainage_completion.bfill()
-        # get drainage construction date e.g. 6 months before completion date
-        drainage_construction_start = drainage_completion - pd.DateOffset(months=construction_period)
-        # get the first drainage construction start date
-        first_construction_date = drainage_construction_start.values[0]
+    sale_date = df_subset[sale_date_column]
+    # initialise drainage period with never
+    drainage_period = pd.Series("never",index=df_subset.index, name="drainage_period")
+    # Note: there is a difference between bfill and ffill
+    # ffill().bfill() means earlier drainage work takes precedence i.e.more NA entries will be filled by earlier drainage works
+    # bfill().ffill() means later drainage work takes precedence i.e.more NA entries will be filled by more recent (later) drainage works
+    # more recent drainage works perhaps should be prioritised because it means previous drainage work could be insufficient
+    drainage_date = df_subset['Drainage_Date'].bfill().ffill()
+    # if unit sale occurred BEFORE drainage work
+    drainage_period.loc[sale_date < drainage_date] = "before"
+    # if unit sale occurred AFTER drainage work
+    drainage_period.loc[sale_date >= drainage_date] = "after"
+    return drainage_period
 
-        # identify rows before construction start date
-        drainage_period.loc[df_subset[sale_date_column] < first_construction_date] = "before" 
-        # assign as construction if sale date is between drainage completion and construction start
-        drainage_period.loc[(df_subset[sale_date_column]>=drainage_construction_start) & (df_subset[sale_date_column]<drainage_completion)] = "construction"
-        # assign as after if sale date is after drainage completion
-        # forward fill NA with after
-        drainage_period = drainage_period.ffill()
-        drainage_period.name = "drainage_period"
-        return drainage_period
-    
-    else:
-        # if work categ rows are all NAs, it means no drainage work has been implemented (untreated), input "never"
-        return pd.Series("never",index=df_subset.index, name="drainage_period")
+def add_road_drainage_works(df_property, df_road_drainage,sale_date_column="Sale_Date",
+                            groupby_column = ["Project Name"], drop_duplicate_column = ["Project Name","Address","Sale_Date"]):
+    """
+    Args:
+        df_property (gpd.GeoDataFrame): df describing property transaction info and property attributes
+        df_road_drainage (pd.GeoDataFrame): df describing buffer location of road raising and drainage works
+        groupby_column (list of str): column to split the df by to examine for each specific location e.g. subzone, or building, or project name
+    Returns:
+        pd.DataFrame: that adds columns describing whether residential area is within a flood prone area for that year
+    """
+    df_copy = copy.deepcopy(df_property)
+    # merge residential with flood data
+    residential_drainage = df_property.sjoin(df_road_drainage, how="left",
+                                             rsuffix="drainage",lsuffix="property")
+    # sort sale date and drainage works date by latest to oldest date
+    residential_drainage = residential_drainage.sort_values(by=groupby_column+[sale_date_column, "Drainage_Date"],ascending=False)
+    # remove duplicated rows
+    # drop duplicates by keeping only the first row because the df has been sorted by Sale and Drainage dates 
+    # by latest date first (closest date between Sale and Drainage dates), and NAs at the bottom (so we do not accidentally keep the NA also)
+    # unit with unique sale date and address can have two different drainage works
+    unique_residential_flood = residential_drainage.drop_duplicates(subset=drop_duplicate_column+["work_categories"],keep='first')
+    # aggregate drainage works by the same location e.g. work A and B are carried out at the same location but exists as separate rows in the df, 
+    # aggregate them such that it shows A & B works in one row instead of 2 row
+    # aggregate Drainage Date by showing the latest drainage date
+    # resets all index - neds to merge with df_copy
+    unique_residential_flood = unique_residential_flood.groupby(drop_duplicate_column).agg({'work_categories': lambda x: ','.join([str(i) for i in set(x.tolist())]),
+                                                                                            'Drainage_Date': lambda x: x.max()}).reset_index()
+    # merge on columns that describes unique rows
+    df_copy = df_copy.merge(unique_residential_flood,on=drop_duplicate_column,how='left')
+    # fill work categories for same project units
+    work_categories = df_copy.groupby(groupby_column).apply(lambda x: x['work_categories'].ffill().bfill().fillna("none")).reset_index(level=[0])
+    df_copy.loc[work_categories.index,"work_categories"] = work_categories["work_categories"].str.replace('nan', 'none')
+    # add drainage period to indicate if sale date occurred before or after drainage works
+    drainage_period = df_copy.groupby(groupby_column).apply(lambda x: get_drainage_period(x,sale_date_column=sale_date_column)).reset_index(level=[0])
+    df_copy.loc[drainage_period.index,"drainage_period"] = drainage_period["drainage_period"]
+    return df_copy
     
 def get_work_categories(df_subset, sale_date_column="Sale_Date"):
     """ 

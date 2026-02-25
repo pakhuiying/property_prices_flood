@@ -64,7 +64,7 @@ def get_property_type(text):
     apply column wise on Property Type column. 
     Consolidates condominium etc, and consolidates landed
     """
-    if re.search(r"Condominium|Apartment|Executive Condominium",text,re.IGNORECASE):
+    if re.search(r"Condominium|Apartment|Executive Condominium|Non-landed Properties",text,re.IGNORECASE):
         return "Condominium/Apartment"
     else:
         return "Landed"
@@ -82,14 +82,14 @@ def get_project_name(row):
     # TODO: Deprecated function
     for project name ==N.A., get address before unit unit number #
     """
-    if row['Project Name'] == "N.A.":
+    if (row['Project Name'] == "N.A.") or (row['Project Name'] == "NIL"):
         match = re.match(r"^(.*?)\s*#",row['Address'])
         if match:
             return match.group(1).strip()
         else:
             return row['Address']
     else:
-        return row['Address']
+        return row['Project Name']
 
 def get_tenure(text):
     """ 
@@ -148,7 +148,8 @@ def get_ground_floor(row):
     else:
         return False 
     
-def get_travel_time_to_destination(G_car,residential_df,residential_nodes_column_name,destination_df, destination_nodes_column_name):
+def get_travel_time_to_destination(G_car,residential_df,residential_nodes_column_name,destination_df, destination_nodes_column_name,
+                                   address_column_name="Address"):
     """ 
     Args:
         G_car (networkx.Graph): graph representing the car network
@@ -168,21 +169,21 @@ def get_travel_time_to_destination(G_car,residential_df,residential_nodes_column
         # for _, row_trans in residential_df[[residential_nodes_column_name,'Address','Sale_Date']].iterrows():
         for ix in residential_df.index:
             nodes_key = residential_df.loc[ix, residential_nodes_column_name]
-            address = residential_df.loc[ix, "Address"]
+            address = residential_df.loc[ix, address_column_name]
             date = residential_df.loc[ix, "Sale_Date"]
 
             try:
                 shortest_time_property_workplace.append({residential_nodes_column_name:nodes_key, f'{pln_area}_travel_time':shortest_time[nodes_key], 
-                                                         'Address':address, 'Sale_Date':date})
+                                                         address_column_name:address, 'Sale_Date':date})
             except:
                 shortest_time_property_workplace.append({residential_nodes_column_name:nodes_key, f'{pln_area}_travel_time':np.nan,
-                                                         'Address':address, 'Sale_Date':date})
+                                                         address_column_name:address, 'Sale_Date':date})
 
         df_travel_time = pd.DataFrame(shortest_time_property_workplace)
         df_list.append(df_travel_time)
 
     # merge all dataframes, combining on nodesID_property
-    travel_time_df = pd.concat([d.set_index([residential_nodes_column_name,"Address","Sale_Date"]) for d in df_list], axis=1, join='outer').reset_index()
+    travel_time_df = pd.concat([d.set_index([residential_nodes_column_name,address_column_name,"Sale_Date"]) for d in df_list], axis=1, join='outer').reset_index()
     # create a column that shows the planning area work cluster with the minimum travel time
     travel_time_df['min_travel_time_work_region'] = travel_time_df.iloc[:,3:].idxmin(axis=1).str.replace("_travel_time","")
     # create a column that shows the minimum travel time to the closest work cluster

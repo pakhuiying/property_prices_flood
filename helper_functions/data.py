@@ -46,6 +46,11 @@ MRT_FP = r"Exported_Data\MRT_opening\MRT_stations_opening.csv"
 
 # HDB resale data
 HDB_RESALE_RESIDENTIAL_FP = r"Exported_Data\Resale_prices_2014_2024.csv"
+PRI_SCH_CAR_TRAVEL_FP_HDB_RESALE = r"Data\topPrimarySchools_travel_time_car_HDBResale.csv"
+PRI_SCH_WALK_TRAVEL_FP_HDB_RESALE = r"Data\topPrimarySchools_travel_time_walk_HDBResale.csv"
+
+# Rental data
+RENTAL_RESIDENTIAL_FP = r"Exported_Data\Rental_prices_2014_2024.csv"
 
 def get_private_residential_df(fp):
     residential_df = pd.read_csv(fp)
@@ -67,6 +72,8 @@ def get_private_residential_df(fp):
 
     # get building name from address
     residential_df["Building Name"] = residential_df["Address"].apply(lambda x: ResidentialAttributes.get_building_name(x))
+    # make sure that project name doesnt have NA or NIL
+    residential_df['Project Name'] = residential_df.apply(lambda x: ResidentialAttributes.get_project_name(x),axis=1)
     # simplify tenure type to just freehold and lease hold
     tenure_mask = (residential_df['Tenure'] != 'Freehold')
     residential_df.loc[tenure_mask,'Tenure'] = 'Leasehold'
@@ -131,6 +138,36 @@ def get_hdb_residential_df(fp):
     # TODO: spatial join with planning area and subzone shp file
     return resale_prices_df
 
+def get_rental_residential_df(fp):
+    residential_df = pd.read_csv(fp)
+    # rename columns
+    rename_columns = {"Lease Commencement Date":"Sale_Date",
+                      "Monthly Rent ($)":'Transacted Price ($)'
+                      }
+    # add month_year column
+    residential_df['month_year'] = residential_df["Lease Commencement Date"]
+    residential_df = residential_df.rename(columns=rename_columns)
+    # change date to datetime format
+    residential_df["Sale_Date"] = pd.to_datetime(residential_df["Sale_Date"],format="%b %Y")
+    # get year and month columns
+    residential_df["year"] = residential_df['Sale_Date'].dt.year.astype(int)
+    residential_df["month"] = residential_df['Sale_Date'].dt.month.astype(int)
+    # convert prices to float
+    residential_df['Transacted Price ($)'] = residential_df['Transacted Price ($)'].str.replace(',', '').astype(float)
+    # simplify Property types
+    # simplify Property type, Consolidates condominium etc, and consolidates landed
+    residential_df['Property Type'] = residential_df['Property Type'].astype(str).apply(lambda x: ResidentialAttributes.get_property_type(x))
+    # drop rows with missing longitude and latitude because they are either land or enbloc properties - removal of 494 rows
+    residential_df = residential_df.dropna(subset=['LONGITUDE','LATITUDE'])
+    # drop columns
+    residential_df = residential_df.drop(columns=['Floor Area (SQM)','Floor Area (SQFT)'])
+    # convert cordinates to point geometry
+    residential_df = gpd.GeoDataFrame(residential_df, 
+                                                geometry=gpd.points_from_xy(residential_df['LONGITUDE'], residential_df['LATITUDE']), 
+                                                crs="EPSG:4326")
+    # reset index to get unique index
+    residential_df = residential_df.reset_index(names="unique_index")
+    return residential_df
 # def get_flood_df(fp):
 #     flood_df = pd.read_csv(fp)
 #     # cast as datetime
@@ -143,18 +180,92 @@ def get_hdb_residential_df(fp):
 #     return flood_df
 
 def get_flood_df(fp):
+    """
+    convert df to points gdf
+    Returns:
+        gpd.GeoDataframe: gdf (points) of the flooded coordinates
+    """
     flood_df = pd.read_csv(fp)
     columns_keep = ['Date','SEARCHVAL', 'BLK_NO', 'ROAD_NAME', 'BUILDING', 'ADDRESS', 'POSTAL',
        'X', 'Y', 'LATITUDE', 'LONGITUDE', 'flooded_location']
     flood_df = flood_df[columns_keep]
     # cast as datetime
     flood_df['Date'] = flood_df['Date'].apply(lambda x: pd.to_datetime(x, format='%Y-%m-%d', errors='coerce'))
+    # flood_df['Date'] = flood_df['Date'].apply(lambda x: pd.to_datetime(x, format='%d/%m%Y', errors='coerce'))
     flood_df = gpd.GeoDataFrame(flood_df, geometry=gpd.points_from_xy(flood_df.LONGITUDE, flood_df.LATITUDE),crs="EPSG:4326")
     # rename columns
     rename_columns = {"Date":"Flood_Date"}
     flood_df = flood_df.rename(columns=rename_columns)
-
+    # add month and year
+    flood_df['year'] = flood_df['Flood_Date'].dt.year.astype(int)
+    flood_df['month'] = flood_df['Flood_Date'].dt.month.astype(int)
     return flood_df
+
+def get_flood_shp(G, fp):
+    """
+    create geodatafrom from get_flood_df, where ccoordinates are mapped to the nearest road using road network G
+    Args:
+        G (networkx.Graph): graph representing the car network
+        fp (str): filepath to csv containing the processed empirical flood df.
+    Returns:
+        gpd.GeoDataframe: gdf (polyline) of the extracted roads where empirical flooding occurred
+    """
+    flood_df = get_flood_df(fp)
+    print("length of flood_df: ", len(flood_df))
+    G_edges = ox.graph_to_gdfs(G, edges=True,nodes=False)
+    flood_df_edges = ox.nearest_edges(G,flood_df['LONGITUDE'],flood_df['LATITUDE'])
+    flood_df_edges = G_edges.loc[flood_df_edges]
+    flood_df_edges = flood_df_edges.reset_index()
+    print("length of edges: ", len(flood_df_edges))
+    # flood_df['geometry'] = flood_df_edges['geometry'].to_list()
+    # add u,v, geometry to flood_df
+    flood_df[['u','v','geometry']] = flood_df_edges[['u','v','geometry']]
+    flood_df = gpd.GeoDataFrame(data=flood_df,geometry=flood_df['geometry'],
+                                        crs="EPSG:4326")
+    return flood_df
+
+def get_flood_buffer(G, fp,radius=200):
+    """
+    using coordinates, extract the corresponding flooded road using road network G, then put a buffer around it
+    Args:
+        G (networkx.Graph): graph representing the car network
+        fp (str): filepath to csv containing the processed flooding_hotspot list.
+        flooding hotspot analysis can be found in drain_analysis.ipynb
+    Returns:
+        gpd.GeoDataframe: gdf of the buffered extracted roads where flooding occurred
+    """
+    flood_df = get_flood_shp(G, fp)
+    flood_df_buffer = flood_df.copy()
+    flood_df_buffer['geometry'] = serviceArea.add_buffer(flood_df,buffer_dist=radius, crs="EPSG:4326",plot=False)
+    return flood_df_buffer
+
+def get_flood_network_buffer(G, fp,reverse = False, 
+                                depth_limit = 2,
+                                buffer_dist=200):
+    """
+    Args:
+        G (networkx.Graph): graph representing the car network
+        fp (str): filepath to csv of empirical historical flood df
+        reverse (bool): If True traverse a directed graph in the reverse direction
+        depth_limit (float): Specify the maximum search depth
+        buffer_dist (None or float): if None, return the non-buffered downstream roads, else return the buffered downstream roads
+    Returns:
+        gpd.GeoDataFrame: buffer around downstream flooded roads
+    """
+    flood_df = get_flood_shp(G, fp)
+    # detect downstream roads from flooded roads - reuse function from roadraisingworks
+    flood_network_df = RoadRaisingWorks.get_road_raising_works_df(G, flood_df,
+                                reverse = reverse, depth_limit = depth_limit,
+                                plot = False)
+    if buffer_dist is not None:
+        # add buffer
+        flood_network_buffer_df = copy.deepcopy(flood_network_df)
+        flood_network_buffer = serviceArea.add_buffer(flood_network_df,buffer_dist=buffer_dist,plot=False)
+        flood_network_buffer_df.loc[flood_network_buffer.index,"geometry"] = flood_network_buffer
+        return flood_network_buffer_df
+    else:
+        return flood_network_df
+    
 
 def get_coastal_flood_prone(fp):
     """returns a multipolygon"""
@@ -167,7 +278,7 @@ def get_flooding_hotspot_shp(G, fp):
     Args:
         G (networkx.Graph): graph representing the car network
         fp (str): filepath to csv containing the processed flooding_hotspot list.
-        flooding hotspot analysis can be found in drain_analysis.ipynb
+        flooding hotspot analysis can be found in data_processing.py or drain_analysis.ipynb
     Returns:
         gpd.GeoDataframe: gdf of the extracted roads where flooding occurred
     """

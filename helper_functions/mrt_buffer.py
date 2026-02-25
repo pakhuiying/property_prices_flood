@@ -6,6 +6,7 @@ def get_train_columns(df_subset,construction_period=6,sale_date_column="Sale_Dat
     """
     Args:
         df_subset (pd.DataFrame): df for a specific Address and a sale date
+        construction_period (int): number of months prior to opening of mrt
     Returns:
         pd.Series: that describes number of existing and upcoming train stns and their mrt lines per transaction record
     """
