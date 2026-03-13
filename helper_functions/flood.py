@@ -50,12 +50,19 @@ def get_flood_within_months(df_subset,sale_date_column="Sale_Date",months_after_
     Returns:
         pd.Series: boolean column that describes whether there is flood within 6 months
     """
-    df_subset = df_subset.sort_values(by=sale_date_column)
-    flood_date = df_subset["Flood_Date"].ffill() # sort oldest date to most recent date
-    sale_date = df_subset[sale_date_column]
-    flood_date_months_later = flood_date + pd.DateOffset(months=months_after_flood)
+    df_subset = df_subset.sort_values(by=sale_date_column) # sort oldest date to most recent date
+    
     has_flood_within_months = pd.Series(False,index=df_subset.index,name=f"within_{months_after_flood}_months_post_flood")
-    mask = (sale_date >= flood_date) & (sale_date <= flood_date_months_later)
+    if months_after_flood > 0:
+        flood_date = df_subset["Flood_Date"].ffill() 
+        sale_date = df_subset[sale_date_column]
+        flood_date_months_later = flood_date + pd.DateOffset(months=months_after_flood)
+        mask = (sale_date >= flood_date) & (sale_date <= flood_date_months_later)
+    else:
+        flood_date = df_subset["Flood_Date"].bfill() 
+        sale_date = df_subset[sale_date_column]
+        flood_date_months_later = flood_date + pd.DateOffset(months=months_after_flood)
+        mask = (sale_date < flood_date) & (sale_date >= flood_date_months_later)
     # print(mask.sum())
     if mask.any(): # if there's any transaction within 6 months of flood/or no floods in an area
         has_flood_within_months.loc[mask] = True

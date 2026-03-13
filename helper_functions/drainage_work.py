@@ -131,11 +131,13 @@ def add_road_drainage_works(df_property, df_road_drainage,sale_date_column="Sale
     # resets all index - neds to merge with df_copy
     unique_residential_flood = unique_residential_flood.groupby(drop_duplicate_column).agg({'work_categories': lambda x: ','.join([str(i) for i in set(x.tolist())]),
                                                                                             'Drainage_Date': lambda x: x.max()}).reset_index()
+    # because work_categories are collapsed together for string joining, the NaN are cast to string too, which may have issues for bfill and ffill
+    unique_residential_flood['work_categories'] = unique_residential_flood['work_categories'].replace('nan',np.nan)
     # merge on columns that describes unique rows
     df_copy = df_copy.merge(unique_residential_flood,on=drop_duplicate_column,how='left')
     # fill work categories for same project units
     work_categories = df_copy.groupby(groupby_column).apply(lambda x: x['work_categories'].ffill().bfill().fillna("none")).reset_index(level=[0])
-    df_copy.loc[work_categories.index,"work_categories"] = work_categories["work_categories"].str.replace('nan', 'none')
+    df_copy.loc[work_categories.index,"work_categories"] = work_categories["work_categories"]#.str.replace('nan', 'none')
     # add drainage period to indicate if sale date occurred before or after drainage works
     drainage_period = df_copy.groupby(groupby_column).apply(lambda x: get_drainage_period(x,sale_date_column=sale_date_column)).reset_index(level=[0])
     df_copy.loc[drainage_period.index,"drainage_period"] = drainage_period["drainage_period"]
@@ -151,11 +153,11 @@ def get_work_categories(df_subset, sale_date_column="Sale_Date"):
         pd.Series
     """
     # identify rows which coincides with drainage works
-    drainage_entries = df_subset["work_categories"].notna()
+    drainage_entries = df_subset["work_categories"].notna() 
     if drainage_entries.sum() > 0:
-        # make sure the df_subset is sorted by date
+        # make sure the df_subset is sorted by date # sort oldest date to most recent date
         df_subset = df_subset.sort_values(by=sale_date_column)
-        work_categories = df_subset['work_categories'].bfill()
+        work_categories = df_subset['work_categories'].bfill()#.ffill()
         # create mask for rows with "after"
         mask = (df_subset["drainage_period"]=="after")|(df_subset["drainage_period"]=="before")
         work_categories.loc[mask] = np.nan
