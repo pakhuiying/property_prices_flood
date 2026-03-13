@@ -3,60 +3,45 @@ import pandas as pd
 import geopandas as gpd
 import os
 import re
-# import fnmatch
-# import matplotlib.pyplot as plt
 from functools import reduce
-# from bs4 import BeautifulSoup
-# import requests
 import osmnx as ox
-# from API_KEY import get_OneMap_token
-# import networkx as nx
 import copy
-# import matplotlib
-# import matplotlib as mpl
 from datetime import datetime
-# from matplotlib_scalebar.scalebar import ScaleBar
-# from matplotlib_map_utils.core.north_arrow import NorthArrow, north_arrow
-
 import sys
+import time
 
 # Get the absolute path to the directory containing the module
 module_dir = os.path.abspath(r"C:\Users\hypak\OneDrive - Singapore Management University\Documents\Projects\Risk Assessment\Impact of flood on property prices")
 # Add the directory to the system path
 sys.path.append(module_dir)
 
-
-# import helper_functions.serviceArea as serviceArea
-# import helper_functions.amenities_dict as amenities_dict
-# import helper_functions.plot_utils as plot_utils
-# import helper_functions.OneMapAPI as OneMapAPI
 import importlib
 
 import helper_functions.residential_attributes
-import helper_functions.flood
 import helper_functions.mrt_buffer
-import helper_functions.drainage_work
 import helper_functions.data
 import helper_functions.DEM
+import helper_functions.flood_drainage_work
 
 importlib.reload(helper_functions.residential_attributes)
-importlib.reload(helper_functions.flood)
 importlib.reload(helper_functions.mrt_buffer)
-importlib.reload(helper_functions.drainage_work)
 importlib.reload(helper_functions.data)
 importlib.reload(helper_functions.DEM)
+importlib.reload(helper_functions.flood_drainage_work)
 
 import helper_functions.residential_attributes as residential_attributes
-import helper_functions.flood as Flood
 import helper_functions.mrt_buffer as mrt_buffer
-import helper_functions.drainage_work as drainage_work
 import helper_functions.data as Data
 import helper_functions.DEM as DEM
+import helper_functions.flood_drainage_work as FloodDrainage
+import helper_functions.utils as utils
 
 
-def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
-         months_after_flood_list = [1,2,3, 6, 9, 12], flood_bins = None,
+def main(buffer=500, depth=5, 
+         months_after_flood_list = [1,2,3, 6, 9, 12], 
+         flood_bins = None,
          save_dir = r"Exported_Data",
+         pickle_data = True,
          flood_arg = True,
          flood_hotspot_arg = True,
          tide_prone_arg = False,
@@ -75,9 +60,11 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
     
     :param buffer: buffer around points/polygons so that it will intersect with residential building. higher buffer radius implies buffer area will intersect with residential building
     :param depth: BFS depth, used for road network. TODO: If you don't want to use road network, assign as None
-    :param adaptation_groupby_column: Default is Building Name - better if fixed effect is building, else use Project Name but effects may be diluted because adaption work will be a lot more extension
     :param save_dir: directory of where to save the exported csv file
+    :param pickle_data: bool. whether to pickle data, if True, save as .pkl, else, save as .csv
     """
+    start_time = time.perf_counter()
+
     if depth is not None:
         road_network_buffer = True
     else:
@@ -85,7 +72,7 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
     
     # save results as save_fp filepath
     save_fp = os.path.join(save_dir,
-                        f"floodPrivateResidential_{datetime.today().strftime('%Y%m%d')}_buffer{buffer}_networkDepth{depth}_adaptation{adaptation_groupby_column.replace(' ','')}.csv")
+                        f"PrivRes_{datetime.today().strftime('%Y%m%d')}_buffer{buffer}_networkDepth{depth}.csv")
     print(f"Save file as: {save_fp}")
 
     # Import Data
@@ -179,10 +166,6 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
                                                                                                             format="%d-%m-%Y")
         print("Unique type of adaptation works: ", road_drainage_works["work_categories"].unique())
 
-    ## Import drainage density
-    if drainage_density_arg:
-        drainage_density_df = Data.get_drainage_density_df(Data.DRAINAGE_DENSITY_FP)
-
     ## Import residential attributes
 
     ### Distance to top primary schools
@@ -268,7 +251,7 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
 
     # merging of master df with flood df by location intersection ONLY
     if flood_arg:
-        master_df = Flood.add_historical_flooding(master_df, 
+        master_df = FloodDrainage.add_historical_flooding(master_df, 
                                             flood_df[["flooded_location","Flood_Date","geometry"]],
                                             sale_date_column="Sale_Date",
                                             drop_duplicate_column = ["Project Name","Address","Sale_Date"])
@@ -277,43 +260,19 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
 
         # add boolean flags on whether obs has recent flood occurrences
         for months_after_flood in months_after_flood_list:
-            master_df = Flood.add_flood_within_months(master_df,sale_date_column="Sale_Date",
-                                                    months_after_flood=months_after_flood,
-                                                    groupby_column=adaptation_groupby_column,
-                                                    drop_duplicate_column = ["Project Name","Address","Sale_Date"])
+            master_df = FloodDrainage.add_event_within_months(master_df,
+                                                              sale_date_column="Sale_Date",
+                                                              event_date_column="Flood_Date",
+                                                    months_after_event=months_after_flood)
             
-            print(f"Number of flood within {months_after_flood} months: {master_df[f'within_{months_after_flood}_months_post_flood'].sum()}")
-
-        master_df = Flood.add_time_since_flood(master_df,sale_date_column="Sale_Date",
-                                            groupby_column=adaptation_groupby_column,
-                                            drop_duplicate_column = ["Project Name","Address","Sale_Date"], 
-                                            fillna=np.nan,
-                                            units="months", bins=flood_bins)
+            print(f"Number of flood within {months_after_flood} months: {master_df[f'within_{months_after_flood}_months_post_Flood_Date'].sum()}")
         
-        # add column to label treated properties i.e. within flood_buffer of radius (buffer)
-        flood_union = flood_df['geometry'].union_all()
-        master_df['flood_buffer'] = master_df['geometry'].apply(lambda x: flood_union.intersects(x))
+        # if Flood_Date is not NA, then that means flood buffer intersects with the property, else there is no intersection
+        master_df['flood_buffer'] = master_df['Flood_Date'].apply(lambda x: x!=[pd.NaT])
         print(f"Number of properties within {buffer} m buffer: {master_df['flood_buffer'].sum()}")
-        print(f"Number of transactions with flood: {len(master_df[~master_df['Flood_Date'].isna()])}")
+        print(f"Number of transactions with flood: {master_df['flood_buffer'].sum()}")
         print(master_df.columns)
         print("length of df: ", len(master_df))
-    # - Use 6/12/18 months to flag transaction records that has floods occurring within 6/12/18 months
-    # - Include continuous weeks-since-flood as robustness checks (*Note: this is added after checking whether location is in a flood prone area as a check to see if the area has experienced repeated flooding. Reduce noise in dataset by only examining areas with repeated flooding)
-
-    # master_df = master_df.merge(flood_df[["flooded_location","Flood_Date","SUBZONE_N"]],how="left",
-    #                     left_on=["SUBZONE_N",'Sale_Date'], 
-    #                     right_on=["SUBZONE_N",'Flood_Date'],suffixes=('_property','_flood'))
-    # master_df = master_df.drop_duplicates(subset=['Project Name','Address','Sale_Date'])
-    # master_df = Flood.add_flood_within_months(master_df,sale_date_column="Sale_Date",months_after_flood=6,
-    #                                         groupby_column=["SUBZONE_N"])
-    # master_df = Flood.add_flood_within_months(master_df,sale_date_column="Sale_Date",months_after_flood=12,
-    #                                         groupby_column=["SUBZONE_N"])
-    # master_df = Flood.add_flood_within_months(master_df,sale_date_column="Sale_Date",months_after_flood=18,
-    #                                         groupby_column=["SUBZONE_N"])
-    # master_df = Flood.add_weeks_since_flood(master_df,sale_date_column="Sale_Date", 
-    #                                         groupby_column=["SUBZONE_N"],fillna=np.nan)
-    # print(master_df.columns)
-    # print("length of df: ", len(master_df))
 
     ## Merge with PUB-compiled flooding hotspot
     # - Identifies if an area is within a flood prone area for that transaction year
@@ -321,20 +280,16 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
     # - Obtain the latest flooding hotspot date
     # - Directly examine whether flood occurs in a flood-prone area or not, and if flood recency has an impact on property price for area that is flood-prone and for area that is not flood-prone
     if flood_hotspot_arg:
-        master_df = Flood.add_within_flooding_hotspot_buffer(master_df, 
+        master_df = FloodDrainage.add_within_flooding_hotspot_buffer(master_df, 
                                                 flooding_hotspot_buffer[['Flood_Hotspot_Date', 'flooded_locations','geometry']],
-                                            groupby_column = [adaptation_groupby_column], sale_date_column="Sale_Date",
+                                            sale_date_column="Sale_Date",
                                             drop_duplicate_column = ["Project Name","Address","Sale_Date"])
+        # if Flood_Hotspot_Date is not NA, then that means flood hotspot buffer intersects with the property, else there is no intersection
+        master_df['within_flooding_hotspot'] = master_df['Flood_Hotspot_Date'].apply(lambda x: x!=[pd.NaT])
         print(f"Number of obs within flooding hotspot: {master_df['within_flooding_hotspot'].sum()}")
         print(master_df.columns)
         print("length of df: ", len(master_df))
 
-    # master_df = Flood.add_within_flooding_hotspot_buffer(master_df,flooding_hotspot_buffer,
-    #                                                     #  groupby_column = ["Project Name"], 
-    #                                                     groupby_column=[adaptation_groupby_column],
-    #                                                     sale_date_column="Sale_Date")
-    # print(master_df.columns)
-    # print("length of df: ", len(master_df))
 
     ## Merge with coastal flood prine area
     if tide_prone_arg:
@@ -344,54 +299,36 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
 
     ## Merge with drainage work type
     if flood_adaptation_arg:
-        # master_df = master_df.sjoin(road_drainage_works[["work_categories","year","month","ROAD_NAME","geometry"]],how="left",
-        #                                                         rsuffix="drainage",lsuffix="property",on_attribute=["year","month"])
-        # print("length of df: ", len(master_df))
-        # print(master_df['work_categories'].value_counts())
-        # # remove duplicated index - this method corresponds with merging the aggregated data ie. HDB resale method
-        # master_df = master_df[~master_df.index.duplicated(keep="first")]
-        # master_df = master_df.drop(columns=['index_drainage'])
-        # print("length of df: ", len(master_df))
-        # print(master_df['work_categories'].value_counts())
-
         ## Merge with drainage period
         # Identify if drainage work took place before and after Sale Date
         
-        master_df = drainage_work.add_road_drainage_works(master_df, 
+        master_df = FloodDrainage.add_road_drainage_works(master_df, 
                                     road_drainage_works[["work_categories","ROAD_NAME","geometry","Drainage_Date"]],
                                     sale_date_column="Sale_Date",
-                                    groupby_column = [adaptation_groupby_column],
                                     drop_duplicate_column = ["Project Name","Address","Sale_Date"])
-        print(master_df['work_categories'].value_counts())
-        print(master_df['drainage_period'].value_counts())
+        print(master_df['past_work_categories'].value_counts())
+        print(master_df['future_work_categories'].value_counts())
+        # print(master_df['drainage_period'].value_counts())
         print(master_df.columns)
         print("length of df: ", len(master_df))
-        print("Number of unique work categories: ", master_df['work_categories'].unique())
-        print(master_df['work_categories'].value_counts())
-    # master_df = drainage_work.add_drainage_period(master_df, construction_period=0,
-    #                                             groupby_column=[adaptation_groupby_column])
-    # # replace construction with before
-    # master_df['drainage_period'] = master_df['drainage_period'].apply(lambda x: "before" if x=="construction" else x)
-    # print(master_df.columns)
-    # print("length of df: ", len(master_df))
-    # print("Number of unique work categories: ", master_df['work_categories'].unique())
-    # print(master_df['work_categories'].value_counts())
-
-    ## Merge with drainage density
-    if drainage_density_arg:
-        master_df = master_df.merge(drainage_density_df,how="left",left_on=["SUBZONE_N","year"],right_on=["SUBZONE_N","year_drainage_density"])
-        master_df = drainage_work.add_drainage_density(master_df,drainage_density_df,sale_date_column = "Sale_Date",noData=0,
-                                                    groupby_column=["SUBZONE_N"])
-        print(master_df.columns)
-        print("length of df: ", len(master_df))
+        # print("Number of unique work categories: ", master_df['work_categories'].unique())
+        # print(master_df['work_categories'].value_counts())
+        # add boolean flags on whether obs has recent flood occurrences
+        # for months_after_flood in months_after_flood_list:
+        #     master_df = FloodDrainage.add_event_within_months(master_df,
+        #                                                       sale_date_column="Sale_Date",
+        #                                                       event_date_column="Drainage_Date",
+        #                                             months_after_event=months_after_flood)
+            
+        #     print(f"Number of flood within {months_after_flood} months: {master_df[f'within_{months_after_flood}_months_post_Drainage_Date'].sum()}")
 
     # Simplify Data
     # only keep relevant columns in master_df
 
     columns_unkeep = ['Area (SQFT)','Unit Price ($ PSF)', 'Nett Price($)',
                     'Number of Units','Purchaser Address Indicator','SEARCHVAL', 'BLK_NO',
-        'ADDRESS', 'POSTAL', 'X', 'Y',
-        'LATITUDE', 'LONGITUDE', 'geometry','nodesID_property']
+                    'ADDRESS', 'POSTAL', 'X', 'Y',
+                    'LATITUDE', 'LONGITUDE', 'geometry','nodesID_property']
     master_df_minimal =  master_df.drop(columns = columns_unkeep)
     # rename columns for readability in R
     rename_columns = {c: re.sub(r"\s|/","_",c) for c in master_df_minimal.columns}
@@ -401,17 +338,23 @@ def main(buffer=500, depth=5, adaptation_groupby_column='Building Name',
     master_df_minimal.head()
 
     # Export Data
-    master_df_minimal.to_csv(save_fp,index=False)
-    print(f"Saving file into...: {save_fp}")
-    return master_df_minimal.columns
+    if pickle_data:
+        utils.pickle_data(master_df_minimal, save_fp)
+    else:
+        master_df_minimal.to_csv(save_fp,index=False)
+    
+    end_time = time.perf_counter()
+    print(f"Saving file into...: {save_fp}\nExecution time: {int((end_time - start_time)/60)} mins.")
+    return master_df_minimal
 
 if __name__ == '__main__':
     # buffer = 500
     depth = None #5
-    adaptation_groupby_column = 'Project Name'#'Building Name'
     months_after_flood_list = np.arange(-12,13,dtype=int).tolist()
+    # months_after_flood_list = [6]
     flood_bins = None
-    save_dir = r"Exported_Data\flood_buffer_dist"
+    save_dir = r"Exported_Data\robustness_checks"
+    pickle_data = True
     # boolean flag to indicate which processing should be conducted
     flood_arg = True
     flood_hotspot_arg = True
@@ -427,9 +370,12 @@ if __name__ == '__main__':
     DEM_arg = False
 
     for buffer in np.arange(50,1050,step=50,dtype=int):
-        main(buffer=buffer, depth=depth, adaptation_groupby_column=adaptation_groupby_column,
-            months_after_flood_list = months_after_flood_list, flood_bins = flood_bins,
+    # for buffer in np.arange(50,100,step=50,dtype=int):
+        main(buffer=buffer, depth=depth,
+            months_after_flood_list = months_after_flood_list, 
+            flood_bins = flood_bins,
             save_dir = save_dir,
+            pickle_data=pickle_data,
             flood_arg = flood_arg,
             flood_hotspot_arg = flood_hotspot_arg,
             tide_prone_arg = tide_prone_arg,
@@ -443,9 +389,4 @@ if __name__ == '__main__':
             centrality_arg = centrality_arg,
             DEM_arg = DEM_arg
             )
-    
-    # for buffer in [200,500]:
-    #     for depth in [None,2,5]:
-    #         for adaptation_groupby_column in ['Building Name', 'Project Name']:
-    #             main(buffer=buffer, depth=depth, adaptation_groupby_column=adaptation_groupby_column,
-    #      save_dir = r"Exported_Data")
+
