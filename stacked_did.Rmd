@@ -1,0 +1,221 @@
+---
+title: "stacked_did"
+output: html_document
+date: "2026-04-03"
+---
+
+# import libraries
+```{r}
+library(dplyr)
+library(tidyr)
+library(fixest)
+# library(stargazer)
+library(modelsummary)
+library(stringr)
+library(ggplot2)
+library(reshape2)
+library(did)
+# source("R_scripts/helper_functions.R")
+source("R_scripts/feols_utils.R")
+source("R_scripts/stacked_did.R")
+```
+
+# Import buffer dfs (Episodic flooding)
+
+```{r}
+import_files = function(fp_list){
+  df_list <- lapply(fp_list, function(fp){
+    
+    factor_vars <- c("Type_of_Sale","SUBZONE_N","PLN_AREA_N","REGION_N","Property_Type")
+    logical_vars <- c("is_ground_floor")
+    read.csv(fp)%>%
+      mutate(log_price_PSM = log(Unit_Price_.._PSM.),
+            log_price = log(Transacted_Price_...),
+            month_year = paste(month, year, sep = "_"))%>%
+      mutate_at(all_of(factor_vars),as.factor)%>%
+      mutate_at(all_of(logical_vars), function(x) as.integer(as.logical(x)))
+  })
+  # bind_rows(df_list, .id="id")
+  df_list
+}
+small_radius <- seq(from=50, to=350, by =20)
+big_radius <- round(sqrt(2)*small_radius,-1)
+
+# dir
+buffer_dir <- file.path(getwd(),"Exported_Data","stacked_did")
+# fp names
+fp_names <- mapply(function(x,y){
+  sprintf("dsmall%03ddbig%03d",x,y)
+},small_radius,big_radius)
+
+fp_list <- file.path(buffer_dir,sprintf("PrivRes_20260403_%s_networkDepthNone.csv", fp_names))
+names(fp_list) <- fp_names
+fp_list
+buffer_df_list <- import_files(fp_list)
+buffer_df_list[[1]]
+```
+
+
+
+
+# 1 TWFE - Generalised DiD TWFE
+
+
+$$
+Y_{it} = \beta_0 Treat_i + \beta_1Post_{it} + \beta_2 Treat_i\times Post_{it} + \gamma X_{it} + \lambda_i + \delta_t + \epsilon_{it} 
+$$
+
+```{r}
+# params
+y_var <- "log_price_PSM"#"log_price"#"log_price_PSM"
+property_type <- "Condominium/Apartment" # "Landed"
+cluster_vars <- c("SUBZONE_N")
+fe_vars <- c("SUBZONE_N","month_year")
+
+local_DID_df_list <- lapply(seq_along(buffer_df_list), function(i){
+  # control variables
+  control_vars <- c("Type_of_Sale","Area_.SQM.","Building_Age","Floor_level","is_ground_floor")
+  
+  # small radius, big radius (treatment, control group)
+  name_df <- names(buffer_df_list)[i]
+  small_radius <- strsplit(name_df,split="dsmall|dbig")[[1]][2]
+  big_radius <- strsplit(name_df,split="dsmall|dbig")[[1]][3]
+  
+  # filter property type so we focus analysis on different panels
+  local_DID_df <- buffer_df_list[[i]]%>%
+    filter(Property_Type == property_type)%>%
+    # filter(contaminated_rows==0)
+    filter(potential_contamination==0)
+  
+  treat_vars <- c("treat")
+  post_vars <- c("post")
+  # model formula
+  model_property_formula <- feols_formula(y_var = y_var,
+                                          control_vars=c(control_vars, treat_vars,post_vars),
+                                          specified_interaction_vars=c(
+                                            sprintf("%s * %s", treat_vars,post_vars)
+                                            ),
+                                          interaction_sep = "*",
+                                          fe_vars = fe_vars,
+                                          cluster_vars = cluster_vars)
+  
+  print(model_property_formula)
+  
+  # fit TWFE model
+  model_property <- feols(
+    model_property_formula$formula,
+    cluster = model_property_formula$cluster,
+    data = local_DID_df
+  )
+  
+  summary(model_property)
+  results_df <- get_model_results(model_property, model_name = sprintf("Treat%s_Control%s",small_radius, big_radius))
+  
+  results_df
+})
+  
+local_DID_df_list <- as.data.frame(do.call(rbind, local_DID_df_list))
+# export data
+write.csv(local_DID_df_list,file.path(buffer_dir,"processed_outputs",
+                        sprintf("episodicFlood_stackedDID_TWFE_%s.csv","potentialcontamination_removed")
+                        ),
+            row.names = FALSE)
+local_DID_df_list
+```
+
+## 1.1 plot robustness
+```{r}
+model_names <- c("contaminated","contaminated_removed", "potentialcontamination_removed")
+
+sapply(model_names, function(x){
+  plot_local_DID_robustness(fp = file.path(buffer_dir,"processed_outputs",
+                        sprintf("episodicFlood_stackedDID_TWFE_%s.csv",x)
+                        ),
+
+                        save_fp=file.path(getwd(),"Exported_Data","exported_figures",
+                        sprintf("episodicFlood_stackedDID_TWFE_%s.svg",x)
+                        ),
+                        
+                        filter_regex="^treat|^post",
+                        significance_regex = "\\*+|\\."
+                        )
+})
+
+```
+
+# 2 Event study (flood causality)
+
+$$
+Y_{it} = \lambda_i + \delta_t + Treat_i + \sum_{k\geq-12, k\neq\{-1,0\}}^{k=12}(D_{it}^k \cdot \beta_k) + \epsilon_{it} 
+$$
+
+- where $D_{it}^k = 1$ if individual $i$ has been exposed to the treatment for $k$ periods in period $t$, and $D_{it}^k = 0$ otherwise.  To be clear here, it is helpful to give some examples.  Suppose individual $i$ becomes treated in period 3.  Then,
+
+* $D_{it}^0 = 1$ when $t=3$ and is equal to 0 in other time periods
+
+* $D_{it}^2 = 1$ when $t=5$ and is equal to 0 in other time periods
+
+* $D_{it}^{-2} = 1$ when $t=1$ and is equal to 0 in other time periods.
+
+
+
+## 2.1 Plot distribution of period_D
+```{r}
+period_D_list <- seq(-24,12,1)
+# combine all dfs together
+bind_rows(buffer_df_list, .id="id")%>%
+  select(id,period_D)%>%
+  filter(period_D  %in% period_D_list)%>%
+  ggplot(aes(x=period_D)) +
+    geom_density(fill="#69b3a2") +
+    facet_wrap(vars(id)) +
+    labs(x="Dt") +
+    theme_bw()
+
+ggsave(filename = file.path(getwd(),"Exported_Data","exported_figures",
+                        sprintf("period_D_%s.svg","stackedDID")
+                        ),
+       width = 9, height = 5, units = "in")
+```
+
+## 2.2 Event study
+```{r}
+get_event_study_df = function(buffer_df, period_D_list, base_period=-1){
+  # period_D_list (vector): list of period D list to obtain
+  # base_period (int): base period of event study, usually just before the event e.g. -1
+  
+  base_period <- sprintf("Dt%s",sub("-","min", base_period))
+  
+  # filter relevant periods
+  buffer_df <- buffer_df%>%
+    # filter((period_D >= min_period_D) & (period_D <= max_period_D))%>%
+    filter(period_D  %in% period_D_list)%>%
+    # create index to merge back dummy variables later
+    mutate(index = row_number())
+  
+  # create dummy variables from period_D
+  Dt_df <- buffer_df%>%
+    dcast(index~period_D, fun.aggregate=length)
+  
+  names(Dt_df) <- c("index",sprintf("Dt%s",sub("-","min",
+                                               names(Dt_df)[c(2:length(names(Dt_df)))]
+                                               )
+                                    ))
+  buffer_df <- merge(buffer_df, Dt_df,by=c("index"))
+  # drop base period column but keep observations associated to it
+  buffer_df <- buffer_df%>%
+    select(-all_of(base_period))
+  
+  # identify Dt vars
+  Dt_vars <- names(buffer_df)[grepl("^Dt.*",names(buffer_df))]
+  Dt_vars
+}
+
+get_event_study_df(buffer_df_list[[1]], period_D_list = seq(-12,6,1), base_period=-1)
+# # create Dt dummy variables using flood period
+#   Dt_df <- buffer_df%>%
+#     mutate(period_D = period_sale - !!as.name(period_flood_var))%>%
+#     mutate_at(vars(period_D), function(x) ifelse(x <= -12,  -12, ifelse(x >= 12, 12, x)))%>%
+#     dcast(index~period_D, fun.aggregate=length)
+```
+

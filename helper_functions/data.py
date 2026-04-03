@@ -52,6 +52,20 @@ PRI_SCH_WALK_TRAVEL_FP_HDB_RESALE = r"Data\topPrimarySchools_travel_time_walk_HD
 # Rental data
 RENTAL_RESIDENTIAL_FP = r"Exported_Data\Rental_prices_2014_2024.csv"
 
+def get_unique_dates(start_date, end_date):
+    """ 
+    Args:
+        start_date (str of pd.Datetime)
+    """
+    if isinstance(start_date, str):
+        start_date = np.datetime64(start_date)
+        end_date = np.datetime64(end_date)
+    
+    unique_dates = pd.to_datetime(pd.date_range(start=start_date, end=end_date,freq='ME').strftime("%Y-%m-01"))
+    period_t = pd.Series(list(range(1,len(unique_dates)+1)))
+    unique_dates = pd.DataFrame({'unique_dates':unique_dates,'period_t':period_t})
+    return unique_dates
+
 def get_private_residential_df(fp):
     residential_df = pd.read_csv(fp)
     # columns to change to numeric
@@ -85,6 +99,8 @@ def get_private_residential_df(fp):
     residential_df['Property Type'] = residential_df['Property Type'].astype(str).apply(lambda x: ResidentialAttributes.get_property_type(x))
     # get floor number from address
     residential_df['Floor_level'] = residential_df.apply(lambda x: ResidentialAttributes.get_floor_number(x),axis=1)
+    # if floor number is NA, assign as 1
+    residential_df['Floor_level'] = residential_df['Floor_level'].fillna(1)
     # check if unit is ground floor. Assume that for condo/apartment, all level 1 are ground floor units
     residential_df['is_ground_floor'] = residential_df['Floor_level'] < 2
     # strip leading and trailing white spaces from PLN_AREA_N because Changi has trailing white spaces
@@ -95,6 +111,15 @@ def get_private_residential_df(fp):
     residential_df = gpd.GeoDataFrame(residential_df, 
                                                 geometry=gpd.points_from_xy(residential_df['LONGITUDE'], residential_df['LATITUDE']), 
                                                 crs="EPSG:4326")
+    # create unique dates and map it to unique integers
+    corrected_time = pd.to_datetime(residential_df['Sale_Date'].dt.strftime("%Y-%m-01"))
+    residential_df['Sale_Date_corrected'] = corrected_time
+    print(f"min date: {residential_df['Sale_Date'].min()}, max date: {residential_df['Sale_Date'].max()}")
+    # get unique property_id
+    residential_df = residential_df.reset_index(names="Property_ID")
+    assert len(residential_df['Property_ID'].unique()) == len(residential_df), "Project_ID must be unique index!"
+    # unique_dates = get_unique_dates(start_date=corrected_time.min(),end_date=corrected_time.max()+pd.Timedelta(days=31))
+    # residential_df = residential_df.merge(unique_dates,left_on='Sale_Date_corrected',right_on='unique_dates',how='left')
     return residential_df
 
 def get_hdb_residential_df(fp):
@@ -199,6 +224,7 @@ def get_flood_df(fp):
     # add month and year
     flood_df['year'] = flood_df['Flood_Date'].dt.year.astype(int)
     flood_df['month'] = flood_df['Flood_Date'].dt.month.astype(int)
+    flood_df['Flood_Date_corrected'] = pd.to_datetime(flood_df['Flood_Date'].dt.strftime("%Y-%m-01"))
     return flood_df
 
 def get_flood_shp(G, fp):
@@ -224,7 +250,7 @@ def get_flood_shp(G, fp):
                                         crs="EPSG:4326")
     return flood_df
 
-def get_flood_buffer(G, fp,radius=200):
+def get_flood_buffer(G, fp,radius=200,flood_location_column = "flooded_location"):
     """
     using coordinates, extract the corresponding flooded road using road network G, then put a buffer around it
     Args:
@@ -237,11 +263,16 @@ def get_flood_buffer(G, fp,radius=200):
     flood_df = get_flood_shp(G, fp)
     flood_df_buffer = flood_df.copy()
     flood_df_buffer['geometry'] = serviceArea.add_buffer(flood_df,buffer_dist=radius, crs="EPSG:4326",plot=False)
+    # add unique ID
+    unique_flood_date_location = flood_df_buffer[['Flood_Date',flood_location_column]].drop_duplicates()
+    unique_flood_date_location = unique_flood_date_location.sort_values('Flood_Date').reset_index(names="Flood_ID")
+    unique_flood_date_location['Flood_ID'] = unique_flood_date_location['Flood_ID'].apply(lambda x: f"F{x}")
+    flood_df_buffer = flood_df_buffer.merge(unique_flood_date_location)
     return flood_df_buffer
 
 def get_flood_network_buffer(G, fp,reverse = False, 
                                 depth_limit = 2,
-                                buffer_dist=200):
+                                buffer_dist=200,flood_location_column = "flooded_location"):
     """
     Args:
         G (networkx.Graph): graph representing the car network
@@ -257,6 +288,12 @@ def get_flood_network_buffer(G, fp,reverse = False,
     flood_network_df = RoadRaisingWorks.get_road_raising_works_df(G, flood_df,
                                 reverse = reverse, depth_limit = depth_limit,
                                 plot = False)
+    # add unique ID
+    unique_flood_date_location = flood_network_df[['Flood_Date',flood_location_column]].drop_duplicates()
+    unique_flood_date_location = unique_flood_date_location.sort_values('Flood_Date').reset_index(names="Flood_ID")
+    unique_flood_date_location['Flood_ID'] = unique_flood_date_location['Flood_ID'].apply(lambda x: f"F{x}")
+    flood_network_df = flood_network_df.merge(unique_flood_date_location)
+
     if buffer_dist is not None:
         # add buffer
         flood_network_buffer_df = copy.deepcopy(flood_network_df)

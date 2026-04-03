@@ -26,7 +26,7 @@ plot_local_DID_robustness = function(fp = NA, local_DID_df_list = NA, save_fp=NA
   plot_local_DID_df_list%>%
     ggplot(aes(x = TREAT, y = CONTROL, col = Estimate, label = Estimate)) +
     # geom_tile() +
-    geom_point(aes(size=0.5*abs(Estimate))) + 
+    geom_point(aes(size=abs(Estimate))) + 
     facet_wrap(vars(title_labeller)) + # Facet by the grouping_var
     # scale_fill_gradient2(low="red", mid="white", high="blue",midpoint=0)+
     scale_color_gradient2(low="red", mid="white", high="blue",midpoint=0)+
@@ -36,8 +36,6 @@ plot_local_DID_robustness = function(fp = NA, local_DID_df_list = NA, save_fp=NA
     scale_y_continuous(breaks = seq(500, 1000, by = 100))+
     # reduce all point size proportionally
     scale_size(range = c(0, 2))+
-    # xlim(50,500)+
-    # ylim(500,1000)+
     theme_bw()
   
   if (!is.na(save_fp)) {
@@ -48,24 +46,87 @@ plot_local_DID_robustness = function(fp = NA, local_DID_df_list = NA, save_fp=NA
   plot_local_DID_df_list
   
 }
-extract_model_results = function(model_results){
-  # model_results: output from unclass(etable(model_property))
-  # outputs: list of data
-  SE <- str_extract(model_results, "(?<=\\().+?(?=\\))")
+
+plot_floodProne_local_DID_robustness = function(fp = NA, local_DID_df_list = NA, save_fp=NA){
+  # fp (str): filepath to model_results e.g file.path(getwd(),"Exported_Data","flood_buffer_dist","processed_df",
+  # sprintf("model_trimmed12months_localDID_%s_CLUSTER%s_FE%s.csv",y_var,cluster_vars[1],fe_vars[1]))
+  # save_fp (str): save plot
+  # import csv of model results
+  if (!is.na(fp)){
+    local_DID_df_list <- read.csv(fp)
+  }
   
-  significance <- str_extract_all(str_extract(model_results, 
-                                              "(?<=\\d).+?(?=\\()"), "[.*]")
+  # process data to filter the significant DID interaction (Treat x Post) variables
+  plot_local_DID_df_list <- local_DID_df_list%>%
+    filter(grepl("^TREAT.*", Vars))%>%
+    filter(grepl("\\*+",Significance))%>%
+    mutate(TREAT = str_extract(Robustness_test, "(?<=Treat).+?(?=_)"),
+           CONTROL = str_extract(Robustness_test, "(?<=Control).+?$")
+    )%>%
+    mutate_at(vars(TREAT,CONTROL,Estimate),as.numeric)
   
-  significance <- sapply(significance, function(x){
-    concat_signif <- paste(x,collapse="")
-    gsub("^\\.","",concat_signif)
-  })
+  # plot heatmap, where each subplot represents the POST duration
+  plot_local_DID_df_list%>%
+    ggplot(aes(x = TREAT, y = CONTROL, col = Estimate, label = Estimate)) +
+    # geom_tile() +
+    geom_point(aes(size=abs(Estimate))) +
+    scale_color_gradient2(low="red", mid="white", high="blue",midpoint=0)+
+    labs(x="Treatment buffer radius (m)",y="Control buffer radius (m)",
+         color="Signed Estimate", size="Absolute Estimate") +
+    scale_x_continuous(breaks = seq(50, 450, by = 50)) +
+    scale_y_continuous(breaks = seq(500, 1000, by = 50))+
+    # reduce all point size proportionally
+    scale_size(range = c(0, 3))+
+    theme_bw()
   
-  estimate <- str_extract(model_property_df$model_property, ".+?(?=\\()")
-  estimate <- gsub("(\\d)\\D+$", "\\1", estimate)
+  if (!is.na(save_fp)) {
+    # Save the last plot as an SVG
+    ggsave(filename = save_fp,width = 5.5, height = 3.5, units = "in")
+  }
   
-  list(Estimate=estimate, SE=SE, Significance=significance)
+  plot_local_DID_df_list
   
+}
+
+
+
+get_floodProne_local_DID_df = function(buffer_df, small_radius, big_radius,
+                                       y_var, fe_vars, cluster_vars){
+  # buffer_df (df): df with residential attributes and TREAT AND POST variables
+  # small radius (int): between 50 to 1000
+  # big radius (int): between 50 to 1000, but must be bigger than small radius
+  
+  property_att_columns <- c(y_var, "Type_of_Sale",
+                            "Area_.SQM.","Building_Age","Floor_level","is_ground_floor",
+                            "month_year",fe_vars[1],cluster_vars[1],"Property_Type"
+  )
+  
+  treatment_buffer_col <- sprintf("TREAT_d%s",small_radius)
+  control_buffer_col <- sprintf("TREAT_d%s",big_radius)
+  
+  
+  # for the larger buffer radius, filtering values == True - this serves as the filter to identify all the control group properties
+  # for the inner buffer radius, values that are True serve as the treatment group that are within the smaller radius, if they are True within the smaller radius, they must be True for the larger radius
+  buffer_df <- buffer_df%>%
+    # create additional cols for y-var and time FE
+    mutate(log_price_PSM = log(Unit_Price_.._PSM.),
+           log_price = log(Transacted_Price_...),
+           month_year = paste(month, year, sep = "_"))%>%
+    # select relevant columns
+    select(c(property_att_columns,
+             treatment_buffer_col, 
+             control_buffer_col))
+  
+  buffer_df <- buffer_df%>%
+    # convert to boolean
+    mutate_at(c(names(buffer_df)[grepl("^TREAT",names(buffer_df))],"is_ground_floor"),as.logical)%>%
+    mutate(across(where(is.character), as.factor))%>%
+    # filter obs based on larger radius
+    # filter({{control_buffer_col}} == "TRUE")
+    filter((!!as.name(control_buffer_col)) == TRUE)
+  
+  
+  buffer_df
 }
 
 get_local_DID_df = function(buffer_df, small_radius, big_radius, months_post_flood,
@@ -211,91 +272,4 @@ get_transaction_df = function(fp, y_var, fe_vars,months_post_flood){
 
 }
 
-interaction_combinations = function(...){
-  # ... accepts an arbitrary number of arguments (both named and unnamed)
-  # Returns: find all combinations input vectors
-  
-  combi <- expand.grid(...)
-  
-  as.vector(lapply(seq_len(nrow(combi)), function(i) as.character(unlist(combi[i, ]))))
-}
 
-feols_formula = function(y_var, control_vars, fe_vars,cluster_vars,
-                         interaction_vars=NA, 
-                         specified_interaction_vars=NA,
-                         interaction_sep="*"){
-  # y_var (chr): y variable
-  # control_vars (vector): control variables
-  # interaction_vars (vector of vector): interaction variables
-  # fe_vars (vector): fixed effect variables
-  # specified_interaction_vars (vector of str): vector of specified interaction e.g. c(a*b, a:c, b:c)
-  # interaction_sep (chr): separator e.g. "*" or ":"
-  # "*" includes the main effects and the interaction
-  # ":" includes the interactions ONLY
-  control_vars_OG <- control_vars
-  
-  if (!any(is.na(interaction_vars))){
-    # flatten interaction list
-    interaction_list <- unlist(interaction_vars)
-    # ensure that same variables do not appear in control vars, otherwise the main effects are included
-    control_vars <- setdiff(control_vars_OG, interaction_list)
-  }
-  
-  if (!any(is.na(specified_interaction_vars))){
-    # if specified_interaction_vars is not NA, overwrite the previous interaction vars
-    specified_interaction_list <- sapply(specified_interaction_vars, function(x) {
-      strsplit(x,"[:* ]+") # split string by delimiter e.g. :, and *
-    })
-    specified_interaction_list <- unlist(specified_interaction_list)
-    # ensure that same variables do not appear in control vars, otherwise the main effects are included
-    control_vars <- setdiff(control_vars, specified_interaction_list)
-    # print(control_vars)
-  }
-  
-  control_vars <- setdiff(control_vars, fe_vars)
-  control_vars <- setdiff(control_vars,c(y_var))
-  control_vars <- setdiff(control_vars, cluster_vars)
-  
-  # collapse interaction vars
-  if (!any(is.na(interaction_vars))){
-    # combine interaction terms
-    itn_terms <- sapply(interaction_vars, function(x) {
-      paste(x,collapse=interaction_sep)
-    })
-    # collapse interaction terms using +
-    itn_terms <- paste(itn_terms, collapse=" + ")
-  } 
-  
-  # collapse specified interaction vars
-  if (!any(is.na(specified_interaction_vars))){
-    # collapse interaction terms using +
-    specified_itn_terms <- paste(specified_interaction_vars, collapse=" + ")
-    
-    # combine with the prev interaction vars if its not NA
-    if (!any(is.na(interaction_vars))) {
-      itn_terms <- paste(c(itn_terms, specified_itn_terms), collapse=" + ")
-    } else { # if prev interaction vars is NA, then override
-      itn_terms <- specified_itn_terms
-    }
-    
-  }
-  
-  # collapse control vars
-  control_terms <-paste(control_vars, collapse = " + ")
-  
-  if (!any(is.na(interaction_vars)) | !any(is.na(specified_interaction_vars))){
-    # combine control and interaction terms
-    control_terms <- paste(control_terms, itn_terms, sep=" + ")
-  }
-  
-  # collapse fe terms
-  fe_terms <- paste(fe_vars, collapse = " + ")
-  
-  # combine all terms
-  formula <- as.formula(paste(y_var,"~", control_terms, "|", fe_terms))
-  
-  cluster_vars <- as.formula(paste("~",paste(cluster_vars, collapse = " + ")))
-  
-  # return as a vector
-  list("formula"=formula,"cluster"=cluster_vars)
-}

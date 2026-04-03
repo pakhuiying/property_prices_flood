@@ -8,143 +8,211 @@ from functools import reduce
 import os
 import geopandas as gpd
 import helper_functions.serviceArea as serviceArea
+import helper_functions.data as Data
 import copy
 
-def get_past_flood(sale_date, flood_date_list):
-    """
-    Args:
-        sale_date (datetime): dt corresponding to property sale date
-        flood_date_list (list of datetime): list of flood dates that intersect with the property's location
-    Returns:
-        pd.Series: latest_flood_date (most recent flood date that occurred before sale date), 
-        past_flood_count (number of past floods that occurred before sale date), 
-        total_flood_count (total number of floods that occurred in the same location as property, past and future floods)
-    """
-    save_dict = dict()
-    flood_date_list = pd.Series(flood_date_list).sort_values() # sort from oldest to most recent dates
-    if flood_date_list.isna().all(): # if flood date list is all NA
-        return pd.Series(np.nan, index=['latest_flood_date','past_flood_count','total_flood_count'])
-    else:
-        # get mask to identify which sale dates occur AFTER flood
-        post_flood = sale_date > flood_date_list
-        if post_flood.any():
-            # get the flood date that occurred closest to the sale date
-            latest_flood_date = flood_date_list[post_flood].values[-1]
-            save_dict['latest_flood_date'] = latest_flood_date
-            # get number of floods that occurred before sale date
-            save_dict['past_flood_count'] = post_flood.sum()
-        else:
-            save_dict['latest_flood_date'] = np.nan
-            save_dict['past_flood_count'] = np.nan
-        # get number of floods (past and future)
-        save_dict['total_flood_count'] = len(flood_date_list)
-        return pd.Series(save_dict, index=list(save_dict))
-    
-def get_past_adaptation(sale_date, adaptation_date_list, work_categories_list):
-    """
-    Args:
-        sale_date (datetime): dt corresponding to property sale date
-        adaptation_date_list (list of datetime): list of adaptation dates that intersect with the property's location
-        work_categories_list (list of work categories): list of adaptation works that has the same length as adaptation_date_list
-    Returns:
-        pd.Series: past_work_categories (concatenated list of adaptation works that have occurred BEFORE the sale date),
-        future_work_categories (concatenated list of adaptation works that have occurred AFTER the sale date),
-    """
-    save_dict = {'past_work_categories':"none", 
-                 'future_work_categories':"none"}
-    if adaptation_date_list != [pd.NaT]: # if adaptation date list is all NA
-        # if unit sale occurred AFTER drainage work
-        adapt_list = [adapt for adapt_date, adapt in zip(adaptation_date_list, work_categories_list) if sale_date > adapt_date]
-        if len(adapt_list) > 0:
-            save_dict['past_work_categories'] = ','.join(adapt_list)
-        # if unit sale occurred BEFORE drainage work
-        adapt_list = [adapt for adapt_date, adapt in zip(adaptation_date_list, work_categories_list) if sale_date <= adapt_date]
-        if len(adapt_list) > 0:
-            save_dict['future_work_categories'] = ','.join(adapt_list)
-    return pd.Series(save_dict, index=list(save_dict))
-    
-def get_event_within_months(sale_date, event_date_list, months_after_event=6):
-    """whether the sale occurred 6 months pre or post event
-    Args:
-        sale_date (datetime): dt corresponding to property sale date
-        event_date_list (list of datetime): list of event dates that intersect with the property's location
-        months_after_event (int): if < 0, locate event occurrence AFTER sale date, else, locate event occurrence BEFORE sale date
-    Returns:
-        pd.Series: whether the sale occurred 6 months pre or post flood
-    """
-    event_date_list = pd.Series(event_date_list).sort_values() # sort from oldest to most recent dates
-    
-    if event_date_list.isna().all(): # if event date list is all NA
-        return False
-    else:
-        event_date_months_later = event_date_list + pd.DateOffset(months=months_after_event)
-        if months_after_event > 0: # post event check
-            mask = (sale_date > event_date_list) & (sale_date <= event_date_months_later)
-        else: # pre-event check
-            mask = (sale_date <= event_date_list) & (sale_date >= event_date_months_later)
+"""
+In the context of the Urban Redevelopment Authority (URA) REALIS (Real Estate Information System) in Singapore, the sale date is defined as the date on which the Option to Purchase (OTP) is exercised or the Sale and Purchase Agreement (S&PA) is signed. 
 
-        return mask.any()
-    
-def get_hotspot_designation_date(sale_date, event_date_list):
-    """check if transaction sale is before hotspot designation, if True, means the place is already a hotspot
-    Args:
-        sale_date (datetime): dt corresponding to property sale date
-        event_date_list (list of datetime): list of flooding hotspot publication dates that intersect with the property's location
-    Returns:
-        pd.Series: pre_hotspot_designation_date (sale date BEFORE hotspot designation. Returns the hotspot designation after the sale date),
-        post_hotspot_designation_date (sale date AFTER hotspot designation. Returns the hotspot designation date just before the sale date)
-    """
-    event_date_list = pd.Series(event_date_list).sort_values() # sort from oldest to most recent dates
-    save_dict = dict()
-    if event_date_list.isna().all(): # if event date list is all NA
-        save_dict['pre_hotspot_designation_date'] = pd.NaT
-        save_dict['post_hotspot_designation_date'] = pd.NaT
-    else:
-        # PRE FLOOD HOTSPOT DESIGNATION
-        hotspot_designation_mask = sale_date <= event_date_list #sale date that occurs before flood hotspot designation date
-        if hotspot_designation_mask.any(): # there are sale dates that occur before flood hotspot designation date
-            # get earliest (oldest) flood hotspot designation date that occurred just after sale
-            # could imply that this area has already experienced flooding
-            save_dict['pre_hotspot_designation_date'] = event_date_list[hotspot_designation_mask].values[0] # get the flood hotspot designation date closest to transaction date
-        else:
-            save_dict['pre_hotspot_designation_date'] = pd.NaT
-        # POST FLOOD HOTSPOT DESIGNATION
-        hotspot_designation_mask = sale_date > event_date_list # sale date after flood hotspot designation date
-        if hotspot_designation_mask.any():
-            # get most recent hotspot designation date
-            # post flood hotspot designation may have an effect on the price or people's perception
-            save_dict['post_hotspot_designation_date'] = event_date_list[hotspot_designation_mask].values[-1]
-        else:
-            save_dict['post_hotspot_designation_date'] = pd.NaT
-    return pd.Series(save_dict, index=list(save_dict))
+Key Details regarding REALIS Sale Date:
+Data Source: REALIS records transactions based on caveats lodged with the Singapore Land Authority (SLA) and stamp duty data from the Inland Revenue Authority of Singapore (IRAS).
+Un-caveated Transactions: If no caveat is lodged, the date of the contract submitted to IRAS for stamp duty payment is used.
+Transaction Timing: The date indicates when the price was agreed upon between the buyer and seller, rather than the legal completion date.
+New Sale vs. Resale: For new projects, it is often the date the developer issues the Option to Purchase. For resale, it is usually the date the option is exercised. 
+"""
 
-def add_event_within_months(df,sale_date_column="Sale_Date", event_date_column="Flood_Date", months_after_event=6):
+def get_year_month_date(date_column):
+    """
+    convert date column to year-month-01 
+    e.g. 2020-01-13 to 2020-01-01
+    """
+    return pd.to_datetime(date_column.dt.strftime("%Y-%m-01"))
+
+def get_past_work_categories(df,sale_date_column="Sale_Date", event_date_column="Drainage_Date",
+                             work_category_column="work_categories"):
+    """
+    Returns:
+        pd.Series (str): identifies work_categories where sale date occurs strictly after Drainage_Date
+    """
+    past_work = df[sale_date_column] > df[event_date_column]
+    past_work_categories = pd.Series(np.nan, dtype="str", index = past_work.index)
+    past_work_categories.loc[past_work] = df[work_category_column].loc[past_work]
+    return past_work_categories
+
+def get_future_work_categories(df,sale_date_column="Sale_Date", event_date_column="Drainage_Date",
+                             work_category_column="work_categories"):
+    """
+    Returns:
+        pd.Series (str): identifies work_categories where sale date occurs before or equals to Drainage_Date
+    """
+    future_work = df[sale_date_column] <= df[event_date_column]
+    future_work_categories = pd.Series(np.nan, dtype="str", index = future_work.index)
+    future_work_categories.loc[future_work] = df[work_category_column].loc[future_work]
+    return future_work_categories
+
+def get_within_flooding_hotspot(df,sale_date_column="Sale_Date", event_date_column="Flood_Hotspot_Date"):
+    """
+    Returns:
+        pd.Series (bool): identifies Flood_Hotspot_Date where sale date occurs before or equals to Flood_Hotspot_Date
+    """
+    return df[sale_date_column] <= df[event_date_column]
+
+def get_pre_hotspot_designation_date(df,sale_date_column="Sale_Date", event_date_column="Flood_Hotspot_Date"):
+    """
+    Returns:
+        pd.Series (pd.datetime): identifies Flood_Hotspot_Date where sale date occurs before or equals to Flood_Hotspot_Date
+    """
+    pre_hotspot = df[sale_date_column] <= df[event_date_column]
+    pre_hotspot_designation_date = pd.Series(pd.NaT, index=pre_hotspot.index)
+    pre_hotspot_designation_date.loc[pre_hotspot] = df[event_date_column].loc[pre_hotspot]
+    return pre_hotspot_designation_date
+
+def get_post_hotspot_designation_date(df,sale_date_column="Sale_Date", event_date_column="Flood_Hotspot_Date"):
+    """
+    Returns:
+        pd.Series (pd.datetime): identifies Flood_Hotspot_Date where sale date occurs strictly after Flood_Hotspot_Date
+    """
+    post_hotspot = df[sale_date_column] > df[event_date_column]
+    post_hotspot_designation_date = pd.Series(pd.NaT, index=post_hotspot.index)
+    post_hotspot_designation_date.loc[post_hotspot] = df[event_date_column].loc[post_hotspot]
+    return post_hotspot_designation_date
+
+def get_past_flood_count(df,sale_date_column="Sale_Date", event_date_column="Flood_Date"):
+    """
+    Returns:
+        pd.Series (bool): identifies where sale date occurs strictly after flood date
+    """
+    # return get_year_month_date(df[sale_date_column]) >= get_year_month_date(df[event_date_column])
+    return df[sale_date_column] >= df[event_date_column]
+
+def get_latest_flood_date(df,sale_date_column="Sale_Date", event_date_column="Flood_Date"):
+    """
+    Returns:
+        pd.Series (pd.datetime): identifies flood dates where sale date occurs strictly after flood date
+    """
+    # only identify rows where sale date occurs strictly after flood date
+    post_flood = get_past_flood_count(df,sale_date_column, event_date_column)
+    latest_flood_date = pd.Series(pd.NaT, index=post_flood.index)
+    latest_flood_date.loc[post_flood] = df[event_date_column].loc[post_flood]
+    return latest_flood_date
+
+def get_event_within_months(df,sale_date_column="Sale_Date", event_date_column="Flood_Date", months_after_event=6):
     """
     Assign True/False if transaction occurs within 6 months of event for each groupby_column
     Args:
         df (pd.DataFrame): dataframe after merging event_df to residential df
         sale_date_column (str): name of sale date column
         event_date_column (str): name of event date column e.g. flood or adaptation
-        months_after_event (int): list of months to identify if event occurs within timeframe
+        months_after_event (int): months to identify if event occurs within timeframe
     Returns:
-        pd.DataFrame with added columns describing True/False if transaction occurs within 6 months of event
+        pd.Series: column describing True/False if transaction occurs within 6 months of event
     """
-    df_copy = copy.deepcopy(df)
-    post_event_column = df_copy.apply(lambda x: get_event_within_months(x[sale_date_column],x[event_date_column],
-                                                                        months_after_event=months_after_event),axis=1)
+    def months_after_event_func(sale_date, event_date, months_after_event):
+        event_date_months_later = event_date + pd.DateOffset(months=months_after_event)
+        return (sale_date > event_date) & (sale_date <= event_date_months_later)
     
-    df_copy[f"within_{months_after_event}_months_post_{event_date_column}"] = post_event_column
+    def months_before_event_func(sale_date, event_date, months_before_event):
+        event_date_months_before = event_date + pd.DateOffset(months=months_before_event)
+        return (sale_date <= event_date) & (sale_date >= event_date_months_before)
 
-    return df_copy
+    if months_after_event > 0:
+        post_event_column = months_after_event_func(df[sale_date_column], 
+                                                    df[event_date_column], 
+                                                    months_after_event)  
+    else:
+        post_event_column = months_before_event_func(df[sale_date_column], 
+                                                df[event_date_column], 
+                                                months_after_event)
+    
+    return post_event_column
 
-def add_historical_flooding(df_property, df_flooding_buffer,sale_date_column="Sale_Date",
-                                       drop_duplicate_column = ["Project Name","Address","Sale_Date"]):
+def get_D_event(period_flood,period_sale, lower=None, upper=None):
+    """
+    get relative time lead/lag with reference to FLOOD EVENT i.e. flood event:= t=0
+    Args:
+        period_flood (pd.Series): flood event on timeline t
+        period_sale (pd.Series): sale event on timeline t
+        lower (float): Minimum threshold value. All values below this threshold will be set to it. 
+        upper (float): Maximum threshold value. All values above this threshold will be set to it. 
+    """
+    period_D = period_sale.astype("Int64") - period_flood.astype("Int64")
+    return period_D.clip(lower=lower,upper=upper)
+
+def get_never_treated(period_flood):
+    """
+    if observation has a flood date, it means the flood buffer intersected with unit
+    unit is considered never treated if there are no intersections with flood buffer
+    """
+    return period_flood.isna()
+
+def get_not_yet_treated(period_D):
+    return (period_D < 0).fillna(True)
+
+def get_treated(period_D):
+    """
+    if observation has a flood date, it means the flood buffer intersected with unit
+    unit is considered treated if sale date occurs after flood date
+    # residential_flood['never_treated'] = get_never_treated(residential_flood['period_flood'])
+    # residential_flood['not_yet_treated'] = get_not_yet_treated(residential_flood['period_D'])
+    # residential_flood['treated'] = get_treated(residential_flood['period_D'])
+    """
+    return (period_D >= 0).fillna(False)
+
+# def add_historical_flooding(df_property, df_flooding_buffer,
+#                             months_after_event = [6],
+#                             sale_date_column="Sale_Date",
+#                                        drop_duplicate_column = ["Project Name","Address","Sale_Date"]):
+#     """
+#     merge with empirical historical flooding data by intersection of locations ONLY
+#     Args:
+#         df_property (gpd.GeoDataFrame): df describing property transaction info and property attributes
+#         df_flooding_buffer (pd.GeoDataFrame): df describing flooding_buffer
+#         months_after_event (list of int): list of months to identify if event occurs within timeframe
+#         drop_duplicate_column (list of str): list of columns that identify a unique sale observation
+#     Returns:
+#         pd.DataFrame: that adds columns describing whether residential area is within a flood prone area for that year
+#     """
+#     df_copy = copy.deepcopy(df_property)
+#     # merge residential with flood data by location ONLY
+#     # groupby column is not needed because only areas that intersect with df_flooding_buffer will have non NA flooded_location and Flood_Date data
+#     # areas that don't intersect with df_flooding_buffer will just have NA values
+#     residential_flood = df_copy.sjoin(df_flooding_buffer, how="left")
+#     # add post flood bool col
+#     for month_after_event in months_after_event:
+#         residential_flood[f"within_{month_after_event}_months_post_Flood_Date"] = get_event_within_months(residential_flood,sale_date_column=sale_date_column, 
+#                                 event_date_column="Flood_Date", months_after_event=month_after_event)
+#     # get past flood stats e.g. 'latest_flood_date','past_flood_count','total_flood_count'
+#     residential_flood['latest_flood_date'] = get_latest_flood_date(residential_flood,sale_date_column=sale_date_column, 
+#                                 event_date_column="Flood_Date")
+#     residential_flood['past_flood_count'] = get_past_flood_count(residential_flood,sale_date_column=sale_date_column, 
+#                                 event_date_column="Flood_Date")
+#     # identify obs that have a flood date, which would indicate that a flood occurred
+#     residential_flood['total_flood_count'] = residential_flood['Flood_Date'].notna()
+#     # collapse duplicate rows into unique observations
+#     residential_flood_agg = residential_flood.groupby(drop_duplicate_column).agg({'Flood_Date': lambda x: list(x),
+#                                                                               'flooded_location': lambda x: list(x),
+#                                                                               'latest_flood_date': lambda x: x.sort_values(ascending=False).values[0],
+#                                                                               'past_flood_count': lambda x: x.sum(),
+#                                                                               'total_flood_count': lambda x: x.sum()
+#                                                                               } | {f"within_{i}_months_post_Flood_Date": lambda x: x.any() for i in months_after_event}).reset_index()
+    
+#     df_copy = df_copy.merge(residential_flood_agg)
+#     return df_copy
+
+def add_historical_flooding(df_property, df_flooding_buffer,
+                            Dt_min = -12, Dt_max = 12,
+                            sale_date_column="Sale_Date",
+                                       drop_duplicate_column = ["Project Name","Address","Sale_Date"],
+                                       prefix="Dt"):
     """
     merge with empirical historical flooding data by intersection of locations ONLY
     Args:
         df_property (gpd.GeoDataFrame): df describing property transaction info and property attributes
         df_flooding_buffer (pd.GeoDataFrame): df describing flooding_buffer
+        Dt_min (int): minmum cut off point to consider pre-flood event time. values smaller than this is clipped to this value.
+        Dt_max (int): maximum cut off point to consider post-flood event time. values bigger than this is clipped to this value.
         drop_duplicate_column (list of str): list of columns that identify a unique sale observation
+        prefix (str): prefix for columns describing lead/lags wrt to flood event
     Returns:
         pd.DataFrame: that adds columns describing whether residential area is within a flood prone area for that year
     """
@@ -152,12 +220,64 @@ def add_historical_flooding(df_property, df_flooding_buffer,sale_date_column="Sa
     # merge residential with flood data by location ONLY
     # groupby column is not needed because only areas that intersect with df_flooding_buffer will have non NA flooded_location and Flood_Date data
     # areas that don't intersect with df_flooding_buffer will just have NA values
-    residential_flood = df_property.sjoin(df_flooding_buffer, how="left")
-    residential_flood_agg = residential_flood.groupby(drop_duplicate_column).agg({'Flood_Date': lambda x: list(x),
-                                                                              'flooded_location': lambda x: list(x)}).reset_index()
+    residential_flood = df_copy.sjoin(df_flooding_buffer, how="left")
+    # sort sale and flood date from oldest to latest
+    # residential_flood = residential_flood.sort_values(by=['Sale_Date','Flood_Date'])
+    # get year-month columns
+    residential_flood['Sale_Date_corrected'] = get_year_month_date(residential_flood['Sale_Date'])
+    residential_flood['Flood_Date_corrected'] = get_year_month_date(residential_flood['Flood_Date'])
+    
+    # get objective timeline - period_t, which is an absolute timeline (not relative to any event)
+    start_date = residential_flood['Sale_Date_corrected'].min() - pd.DateOffset(years=2) #residential_flood['Sale_Date_corrected'].min() if residential_flood['Sale_Date_corrected'].min() < residential_flood['Flood_Date_corrected'].min() else residential_flood['Flood_Date_corrected'].min()
+    end_date = residential_flood['Sale_Date_corrected'].max() + pd.DateOffset(years=2) #residential_flood['Sale_Date_corrected'].max() if residential_flood['Sale_Date_corrected'].max() > residential_flood['Flood_Date_corrected'].max() else residential_flood['Flood_Date_corrected'].max()
+    unique_dates = Data.get_unique_dates(start_date=start_date, end_date=end_date+pd.DateOffset(months=1)) # add 1 month offset to be inclusive of end_date
+    
+    # map the absolute time line to the sale and flood dates
+    residential_flood = residential_flood.merge(unique_dates.rename(columns={'unique_dates':'Sale_Date_corrected'}),
+            how="left").rename(columns={'period_t':'period_sale'})
+    residential_flood = residential_flood.merge(unique_dates.rename(columns={'unique_dates':'Flood_Date_corrected'}),
+            how="left").rename(columns={'period_t':'period_flood'})
+
+    # get lead and lags wrt to FLOOD EVENT
+    period_D = get_D_event(residential_flood['period_flood'],residential_flood['period_sale'], 
+                                                lower=Dt_min,upper=Dt_max)
+    residential_flood['period_D'] = period_D
+
+    # convert period_D column into wide format i.e. dummies
+    residential_flood = pd.get_dummies(residential_flood,columns=['period_D'],dtype=int, prefix=prefix)
+    # add back period_D
+    residential_flood['period_D'] = period_D
     # get past flood stats e.g. 'latest_flood_date','past_flood_count','total_flood_count'
-    flood_summary = residential_flood_agg.apply(lambda x: get_past_flood(x[sale_date_column],x['Flood_Date']),axis=1)
-    residential_flood_agg[flood_summary.columns] = flood_summary
+    residential_flood['past_flood_count'] = get_past_flood_count(residential_flood,
+                                                                 sale_date_column='Sale_Date_corrected', 
+                                event_date_column="Flood_Date_corrected")
+    period_flood_recent = get_latest_flood_date(residential_flood,
+                                                sale_date_column='Sale_Date_corrected', 
+                                event_date_column="Flood_Date_corrected").to_frame(name='period_flood_recent')
+    # map first and recent flood dates to flood period
+    # period_flood_recent['period_flood_recent'] = get_year_month_date(period_flood_recent['period_flood_recent'])
+    period_flood_recent = period_flood_recent.merge(unique_dates,left_on='period_flood_recent', right_on='unique_dates',how='left')
+    residential_flood['period_flood_recent'] = period_flood_recent['period_t']
+    residential_flood['period_flood_first'] = residential_flood['period_flood_recent']
+    # collapse duplicate rows into unique observations
+    Dt_column_names = [i for i in residential_flood.columns if i.startswith(f'{prefix}_')]
+    residential_flood_agg = residential_flood.groupby(drop_duplicate_column+['period_sale']).agg({'Flood_Date': lambda x: list(x),
+                                                                                'period_flood': lambda x: list(x),
+                                                                                'period_flood_first': lambda x: x.min(), # record the first flood in observation period
+                                                                                'period_flood_recent': lambda x: x.max(), # record most recent flood that occurred before sale date
+                                                                              'flooded_location': lambda x: list(x),
+                                                                              'past_flood_count': lambda x: x.sum(), # flood intensity based on previous flood count before sale date
+                                                                              } | {i: lambda x: x.sum() for i in Dt_column_names}).reset_index()
+    
+    # get treatment status of units
+    Dt_columns = [i for i in residential_flood_agg.columns if i.startswith(f'{prefix}_')]
+    Dt_pre_columns = [i for i in residential_flood_agg.columns if i.startswith(f'{prefix}_-')]
+    Dt_post_columns = list(set(Dt_columns)-set(Dt_pre_columns))
+    residential_flood_agg['treated'] = residential_flood_agg[Dt_post_columns].sum(axis=1) > 0
+    residential_flood_agg['never_treated'] = residential_flood_agg[Dt_columns].sum(axis=1) < 1
+    residential_flood_agg['not_yet_treated'] = ~residential_flood_agg['never_treated'] * ~residential_flood_agg['treated']
+    residential_flood_agg.loc[residential_flood_agg['never_treated']==True,'not_yet_treated'] = True
+
     df_copy = df_copy.merge(residential_flood_agg)
     return df_copy
 
@@ -176,12 +296,19 @@ def add_within_flooding_hotspot_buffer(df_property, df_hotspot_buffer,sale_date_
     # groupby column is not needed because only areas that intersect with df_hotspot_buffer will have non NA flooded_location and Flood_Date data
     # areas that don't intersect with df_hotspot_buffer will just have NA values
     residential_flood = df_property.sjoin(df_hotspot_buffer, how="left")
+    residential_flood['pre_hotspot_designation_date'] = get_pre_hotspot_designation_date(residential_flood,
+                                                                                         sale_date_column=sale_date_column,
+                                                                                         event_date_column="Flood_Hotspot_Date")
+    residential_flood['post_hotspot_designation_date'] = get_post_hotspot_designation_date(residential_flood,
+                                                                                         sale_date_column=sale_date_column,
+                                                                                         event_date_column="Flood_Hotspot_Date")
+    # collapse duplicate rows into unique observations
     residential_flood_agg = residential_flood.groupby(drop_duplicate_column).agg({'Flood_Hotspot_Date': lambda x: list(x),
-                                                                              'flooded_locations': lambda x: list(x)}).reset_index()
+                                                                              'flooded_locations': lambda x: list(x),
+                                                                              'pre_hotspot_designation_date': lambda x: x.sort_values().values[0],
+                                                                              'post_hotspot_designation_date': lambda x: x.sort_values(ascending=False).values[0],
+                                                                              }).reset_index()
     
-    # flood hotspot designation dates
-    flood_summary = residential_flood_agg.apply(lambda x: get_hotspot_designation_date(x[sale_date_column], x['Flood_Hotspot_Date']),axis=1)
-    residential_flood_agg[flood_summary.columns] = flood_summary
     df_copy = df_copy.merge(residential_flood_agg)
     return df_copy
 
@@ -198,14 +325,25 @@ def add_road_drainage_works(df_property, df_road_drainage, sale_date_column="Sal
     # merge residential with flood data
     residential_drainage = df_property.sjoin(df_road_drainage, how="left",
                                              rsuffix="drainage",lsuffix="property")
+    residential_drainage['past_work_categories'] = get_past_work_categories(residential_drainage,
+                                                                                         sale_date_column=sale_date_column,
+                                                                                         event_date_column="Drainage_Date",
+                                                                                         work_category_column="work_categories")
+    residential_drainage['future_work_categories'] = get_future_work_categories(residential_drainage,
+                                                                                         sale_date_column=sale_date_column,
+                                                                                         event_date_column="Drainage_Date",
+                                                                                         work_category_column="work_categories")
+    
     # aggregate drainage adaptation events by property location
     residential_drainage_agg = residential_drainage.groupby(drop_duplicate_column).agg({'Drainage_Date': lambda x: list(x),
                                                                                         'work_categories': lambda x: list(x),
-                                                                              'ROAD_NAME_drainage': lambda x: list(x)}).reset_index()
+                                                                              'ROAD_NAME_drainage': lambda x: list(x),
+                                                                              'past_work_categories': lambda x: x.sort_values().str.cat(sep=","),
+                                                                              'future_work_categories': lambda x: x.sort_values().str.cat(sep=",")
+                                                                              }).reset_index()
+    # replace empty strings with none
+    residential_drainage_agg = residential_drainage_agg.replace('',"none")
     df_copy = df_copy.merge(residential_drainage_agg)
-    # add past drainage adaptation work that occurred BEFORE sale date
-    drainage_summary = df_copy.apply(lambda x: get_past_adaptation(x[sale_date_column], x['Drainage_Date'], x['work_categories']),axis=1)
-    df_copy[drainage_summary.columns] = drainage_summary
     
     return df_copy
 

@@ -200,6 +200,7 @@ def add_historical_flooding(df_property, df_flooding_buffer,sale_date_column="Sa
     residential_flood.loc[mask, ["flooded_location","Flood_Date"]] = np.nan
     # remove duplicated rows
     unique_residential_flood = residential_flood[drop_duplicate_column+["flooded_location","Flood_Date"]].drop_duplicates()
+    # unique_residential_flood = residential_flood.drop_duplicates()
     # sort df by Sale_Date and Flood_Date so that the closer Sale_Date and Flood_Date are arranged as the top row
     unique_residential_flood = unique_residential_flood.sort_values(by=[sale_date_column,"Flood_Date"], ascending=False)
     # drop duplicates by keeping only the first row because the df has been sorted by Sale and Flood dates by latest date first, and NAs at the bottom (so we do not accidentally keep the NA also)
