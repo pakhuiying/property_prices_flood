@@ -58,3 +58,8 @@ def logistic(x, beta, alpha):
     """ logistic curve
     """
     return 1.0 / (1.0 + np.exp(np.dot(beta, x) + alpha))
+
+def format_date(date):
+    """convert d/m/y to %Y-%m-%d"""
+    d,m,y = date.split("/")
+    return f"{y}-{m.zfill(2)}-{d.zfill(2)}"

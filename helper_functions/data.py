@@ -26,10 +26,12 @@ G_WALK_FP = os.path.join(os.getcwd(),"Data","Road_Networks","SG_walk_network.gra
 # flood related data
 # DRAINAGE_WORKS_FP = r"Exported_Data\drainage_works_buffer200m.shp"
 # FLOOD_FP = r"Data\precipitation_levels_during_flood_events.csv"
-DRAINAGE_WORKS_FP = r"Exported_Data\drainage_works_roads_2012_2024.csv"
+# DRAINAGE_WORKS_FP = r"Exported_Data\drainage_works_roads_2012_2024.csv"
+DRAINAGE_WORKS_FP = r"Exported_Data\drainage_works_2012_2027.csv"
 FLOOD_FP = r"Data\flood_events_2013_2025.csv"
 # FLOODING_HOTSPOT_FP = r"Data\flooding_hotspots_2011_2024.shp"
 FLOODING_HOTSPOT_FP = r"Data\flooding_hotspots_2011_2025.csv"
+FLOOD_PRONE_FP = r"Data\flood_prone_2011_2025.csv"
 DRAINAGE_DENSITY_FP = os.path.join(r"Data","drainage_density_subzone.csv")
 TIDE_3M_FP = r"Data\water_depth_3m.shp"
 
@@ -44,6 +46,8 @@ MALLS_FP = os.path.join(os.getcwd(),"Data",'SG_malls.geojson')
 PARKS_FP = r"C:\Users\hypak\OneDrive - Singapore Management University\Documents - Heat Risk Index Development\Data\Parks\NParksParksandNatureReserves.geojson"
 MRT_FP = r"Exported_Data\MRT_opening\MRT_stations_opening.csv"
 
+# commercial data
+COMMERCIAL_RENTAL_FP = r"Data\RentalStats_OfficeCommercial\officeCommercial_rentalStats_1999_2025.csv"
 # HDB resale data
 HDB_RESALE_RESIDENTIAL_FP = r"Exported_Data\Resale_prices_2014_2024.csv"
 PRI_SCH_CAR_TRAVEL_FP_HDB_RESALE = r"Data\topPrimarySchools_travel_time_car_HDBResale.csv"
@@ -51,6 +55,15 @@ PRI_SCH_WALK_TRAVEL_FP_HDB_RESALE = r"Data\topPrimarySchools_travel_time_walk_HD
 
 # Rental data
 RENTAL_RESIDENTIAL_FP = r"Exported_Data\Rental_prices_2014_2024.csv"
+
+def get_commercial_rental(fp):
+    commercial_rental = pd.read_csv(fp)
+    commercial_rental['Rental_Date'] = pd.to_datetime(commercial_rental.apply(lambda x: f"{x['Year']-x['Month']}-01", axis=1))
+    commercial_rental['Median Rental ($ PSM)'] = pd.to_numeric(commercial_rental['Median Rental ($ PSM)'], errors="coerce")
+    commercial_rental = commercial_rental.dropna(subset=['LATITUDE','LONGITUDE','Median Rental ($ PSM)'])
+    commercial_rental = gpd.GeoDataFrame(commercial_rental, geometry=gpd.points_from_xy(commercial_rental['LONGITUDE'],commercial_rental['LATITUDE']),
+                                         crs="EPSG:4326")
+    return commercial_rental
 
 def get_unique_dates(start_date, end_date):
     """ 
@@ -152,8 +165,11 @@ def get_hdb_residential_df(fp):
     resale_prices_df['Sale_Date'] = pd.to_datetime(resale_prices_df['month_year'],format="%Y-%m",errors="coerce")
     # check if unit is ground floor. Assume that if flat's lease commence_date is before 1969 and on the low units, then it could be ground floor
     resale_prices_df['is_ground_floor'] = resale_prices_df.apply(lambda x: (x['lease_commence_date']<1969) and (x['Floor_level']=='low'),axis=1)
+    # add unit price column
+    resale_prices_df['Unit Price ($ PSM)'] = resale_prices_df['Transacted Price ($)']/resale_prices_df['Area (SQM)']
     # drop rows with missing longitude and latitude because they are either land or enbloc properties - removal of 494 rows
-    resale_prices_df = resale_prices_df.dropna(subset=['LONGITUDE','LATITUDE'])
+    resale_prices_df = resale_prices_df.dropna(subset=['LONGITUDE','LATITUDE','Unit Price ($ PSM)'])
+
     # convert cordinates to point geometry
     resale_prices_df = gpd.GeoDataFrame(resale_prices_df, 
                                                 geometry=gpd.points_from_xy(resale_prices_df['LONGITUDE'], resale_prices_df['LATITUDE']), 
@@ -345,7 +361,11 @@ def get_flooding_hotspot(G, fp):
     rename_columns = {"year":"Flood_Hotspot_Date","flooded_location":"flooded_locations","latitude":"LATITUDE","longitude":"LONGITUDE"}
     flooding_hotspot = flooding_hotspot.rename(columns=rename_columns)
     # convert to datetime
-    flooding_hotspot["Flood_Hotspot_Date"] = pd.to_datetime(flooding_hotspot["Flood_Hotspot_Date"],format="%b %Y",errors="coerce")
+    try:
+        flooding_hotspot["Flood_Hotspot_Date"] = pd.to_datetime(flooding_hotspot["Flood_Hotspot_Date"],format="%b %Y",errors="raise")
+    except:
+        flooding_hotspot["Flood_Hotspot_Date"] = pd.to_datetime(flooding_hotspot["Flood_Hotspot_Date"],format="%b-%y",errors="coerce")
+
     flooding_hotspot['year'] = flooding_hotspot["Flood_Hotspot_Date"].dt.year
     flooding_hotspot['month'] = flooding_hotspot["Flood_Hotspot_Date"].dt.month
     return flooding_hotspot
@@ -374,6 +394,9 @@ def get_drainage_works_df(fp):
     # drop rows with NAs in coordinates
     completed_drainage_works = completed_drainage_works.dropna(subset=["LATITUDE","LONGITUDE"])
     completed_drainage_works = completed_drainage_works.rename(columns={"Year":"year","Month":"month","Date":"Drainage_Date"})
+    # check if date string format is correct, if if d/m/y format, change it to date format
+    if completed_drainage_works['Drainage_Date'].str.contains("/").all():
+        completed_drainage_works['Drainage_Date'] = completed_drainage_works['Drainage_Date'].apply(utils.format_date)
     return completed_drainage_works
 
 def get_road_raising_buffer_df(G, fp, buffer_dist=500):
@@ -429,34 +452,57 @@ def get_road_raising_network_buffer_df(G, fp, reverse = False, depth_limit = 2,
         return road_raising_works_buffer_df
     else:
         return road_raising_works_df
-    
-def get_drain_improvement_buffer_df(G, fp, buffer_dist=500):
+
+def get_drain_improvement_buffer_df(G, fp, buffer_dist=500, work_categories=None):
     """
     Args:
         G (networkx.Graph): graph representing the car network
         fp (str): filepath to csv of drainage works between 2012 to 2024
         buffer_dist (None or float): if None, return the non-buffered downstream roads, else return the buffered downstream roads
+        work_categories (None or list of str): work categories to select
     Returns:
         gpd.GeoDataFrame: buffer around roadside/outlet drains/culverts
     """
     df = get_drainage_works_df(fp)
-    # filter to get culvert, improvements to roadside/outlet drains
-    drains_df = df[df["work_categories"].apply(lambda x: bool(re.match(".*Outlet Drain.*|.*Roadside Drain.*",x, flags=re.IGNORECASE)))]
-    culvert_df = df[df["work_categories"].apply(lambda x: bool(re.match(".*Culvert.*",x, flags=re.IGNORECASE)))]
-    # rename and simplify work category
-    drains_df['work_categories'] = "Improvement to Roadside/Outlet Drains"
-    culvert_df['work_categories'] = "Improvement to Culvert"
+    # filter type of work categories
+    if ('work_categories' in df.columns) and (work_categories is not None):
+        df = df[df['work_categories'].isin(work_categories)]
     # get the gdfs of drains_df and culvert_df
-    drains_df = DrainageWork.get_drainage_works_gdf(G, drains_df)
-    culvert_df = DrainageWork.get_drainage_works_gdf(G, culvert_df)
-    df = pd.concat([drains_df,culvert_df],axis=0) # concat vertically
-    # reset index because there are duplicate index integers because calling DrainageWork.get_drainage_works_df resets the index on both dfs
-    df = df.reset_index(drop=True)
+    df = DrainageWork.get_drainage_works_gdf(G, df)
     # add buffer
     drainage_works_buffer_df = copy.deepcopy(df)
     drainage_works_buffer = serviceArea.add_buffer(df,buffer_dist=buffer_dist,plot=False)
     drainage_works_buffer_df.loc[drainage_works_buffer.index,"geometry"] = drainage_works_buffer
+    
     return drainage_works_buffer_df
+    
+# def get_drain_improvement_buffer_df(G, fp, buffer_dist=500):
+#     """TODO: work_categories has changed. Update code
+#     Args:
+#         G (networkx.Graph): graph representing the car network
+#         fp (str): filepath to csv of drainage works between 2012 to 2024
+#         buffer_dist (None or float): if None, return the non-buffered downstream roads, else return the buffered downstream roads
+#     Returns:
+#         gpd.GeoDataFrame: buffer around roadside/outlet drains/culverts
+#     """
+#     df = get_drainage_works_df(fp)
+#     # filter to get culvert, improvements to roadside/outlet drains
+#     drains_df = df[df["work_categories"].apply(lambda x: bool(re.match(".*Outlet Drain.*|.*Roadside Drain.*",x, flags=re.IGNORECASE)))]
+#     culvert_df = df[df["work_categories"].apply(lambda x: bool(re.match(".*Culvert.*",x, flags=re.IGNORECASE)))]
+#     # rename and simplify work category
+#     drains_df['work_categories'] = "Improvement to Roadside/Outlet Drains"
+#     culvert_df['work_categories'] = "Improvement to Culvert"
+#     # get the gdfs of drains_df and culvert_df
+#     drains_df = DrainageWork.get_drainage_works_gdf(G, drains_df)
+#     culvert_df = DrainageWork.get_drainage_works_gdf(G, culvert_df)
+#     df = pd.concat([drains_df,culvert_df],axis=0) # concat vertically
+#     # reset index because there are duplicate index integers because calling DrainageWork.get_drainage_works_df resets the index on both dfs
+#     df = df.reset_index(drop=True)
+#     # add buffer
+#     drainage_works_buffer_df = copy.deepcopy(df)
+#     drainage_works_buffer = serviceArea.add_buffer(df,buffer_dist=buffer_dist,plot=False)
+#     drainage_works_buffer_df.loc[drainage_works_buffer.index,"geometry"] = drainage_works_buffer
+#     return drainage_works_buffer_df
 
 # def get_drainage_works_buffer_df(G, fp, reverse = False, depth_limit = 2, 
 #                                      buffer_dist=400):

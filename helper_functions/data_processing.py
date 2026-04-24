@@ -7,6 +7,7 @@ import numpy as np
 # flooding_hotspots = pd.read_csv(r"C:\Users\hypak\OneDrive - Singapore Management University\Documents\Data\Climate Impacts in Singapore\Flooding\flooding_hotspots_2011_2024.csv")
 # pub compiled flooding hotspot
 FLOODING_HOTSPOTS_FP = r"C:\Users\hypak\OneDrive - Singapore Management University\Documents\Data\Climate Impacts in Singapore\Flooding\flooding_hotspots_2011_2025.csv"
+FLOOD_PRONE_FP = r"C:\Users\hypak\OneDrive - Singapore Management University\Documents\Data\Climate Impacts in Singapore\Flooding\flood_prone_2011_2025.csv"
 # historical empirical flooding
 HISTORICAL_FLOODING_FP = r"Data\SG_pluvial_floods_2013to2025.csv"
 
@@ -15,6 +16,7 @@ headers = OneMapAPI.generate_OneMap_headers()
 def get_flooding_hotspots(flooding_hotspots_fp=FLOODING_HOTSPOTS_FP,
                           headers=headers,save_fp=None):
     """ Returns the matched location given a flooded location, using the OneMap API
+    Note: Same function should work for flood prone fp too
     Args:
         flooding_hotspots_fp (str): filepath to df where each column corresponds to flooding locations in that particular year
         save_fp (str): file to save csv

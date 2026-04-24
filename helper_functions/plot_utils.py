@@ -2,6 +2,8 @@ import math
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import matplotlib.colors as mcolors
+import osmnx as ox
+
 def plot_colortable(colors, names, ncols=4, sort_colors=False):
     """ 
     Args:
@@ -96,3 +98,40 @@ def get_colorbar(vmin,vmax,label="Units",cmap="plasma",orientation="horizontal",
 reorder_legend = lambda l, nc: sum((l[i::nc] for i in range(nc)), []) #hl = handles/lanels, nc=number of columns
 # usage example
 # fig.legend(handles=reorder(handles,n_assum),loc=loc, ncol=n_assum, fontsize='medium')
+
+def plot_edge(G,edge_dict,cmap="coolwarm",cbar_orientation="horizontal",
+                    colorbar_label="",edge_size=5,ax=None):
+    """ plot edges value using osmnx"""
+    edges_centrality = list(edge_dict.values())
+    edges = list(edge_dict)
+    vmin = min(edges_centrality)
+    vmax = max(edges_centrality)
+    cbar = get_colorbar(vmin=vmin,vmax=vmax,
+                                   cmap=cmap,plot=False)
+    iso_colors = [mpl.colors.rgb2hex(cbar.to_rgba(i),keep_alpha=True) for i in edges_centrality]
+    if ax is None:
+        fig, ax = plt.subplots(1,1)
+    
+    # map edges to colours
+    edges_colors = {edge: ec_ for edge, ec_ in zip(edges,iso_colors)}
+    ec = [edges_colors[edge] for edge in G.edges(keys=True)]
+    # normalisation of edge
+    edge_linewidth = [(edge_dict[edge]-vmin)/(vmax-vmin)*edge_size for edge in G.edges(keys=True)]
+    # plot edge
+    fig, ax = ox.plot_graph(
+        G,
+        ax=ax,
+        node_color="none",
+        node_size=0,
+        edge_linewidth=edge_linewidth,
+        edge_color=ec,
+        show = False,
+        close = False
+    )
+
+    cbar_ax = fig.add_axes([0.15, 0.07, 0.75, 0.05]) # left, bottom, width, height
+    fig.subplots_adjust(bottom=0.2)
+    fig.colorbar(cbar, cax=cbar_ax, orientation=cbar_orientation, label=colorbar_label)
+    if ax is None:
+        plt.show()
+    return 
