@@ -39,6 +39,7 @@ import helper_functions.utils as utils
 
 def main(buffer=500, depth=5, 
          months_after_flood_list = [1,2,3, 6, 9, 12], 
+         Dt_min = -12, Dt_max = 12,
          flood_bins = None,
          save_dir = r"Exported_Data",
          pickle_data = True,
@@ -101,6 +102,7 @@ def main(buffer=500, depth=5,
     print(f"Number of property types: {len(residential_df['Property Type'].unique())}")
     print(f"Number of different floor number: {len(residential_df['Floor_level'].unique())}")
     print(f"Number of ground floor units: {residential_df['is_ground_floor'].sum()}")
+    print(f"Number of NAs in floor level: {residential_df['Floor_level'].isna().sum()}")
     # residential_df.head()
 
     # import flood data
@@ -252,23 +254,28 @@ def main(buffer=500, depth=5,
     # merging of master df with flood df by location intersection ONLY
     if flood_arg:
         master_df = FloodDrainage.add_historical_flooding(master_df, 
-                                            flood_df[["flooded_location","Flood_Date","geometry"]],
+                                            flood_df[["flooded_location","Flood_Date","geometry","Flood_ID"]],
+                                            Dt_min = Dt_min, Dt_max = Dt_max,
                                             sale_date_column="Sale_Date",
-                                            drop_duplicate_column = ["Project Name","Address","Sale_Date"])
-        print("Number of flooded entries: ",len(master_df[~master_df['flooded_location'].isna()]))
-        print("Length of df: ",len(master_df))
+                                            drop_duplicate_column = ["Project Name","Address","Sale_Date"],
+                                            prefix="Dt")
+        # master_df = FloodDrainage.add_historical_flooding(master_df, 
+        #                                     flood_df[["flooded_location","Flood_Date","geometry"]],
+        #                                     months_after_event=months_after_flood_list,
+        #                                     sale_date_column="Sale_Date",
+        #                                     drop_duplicate_column = ["Project Name","Address","Sale_Date"])
+        # print("Number of flooded entries: ",len(master_df[~master_df['flooded_location'].isna()]))
+        # print("Length of df: ",len(master_df))
 
-        # add boolean flags on whether obs has recent flood occurrences
-        for months_after_flood in months_after_flood_list:
-            master_df = FloodDrainage.add_event_within_months(master_df,
-                                                              sale_date_column="Sale_Date",
-                                                              event_date_column="Flood_Date",
-                                                    months_after_event=months_after_flood)
-            
-            print(f"Number of flood within {months_after_flood} months: {master_df[f'within_{months_after_flood}_months_post_Flood_Date'].sum()}")
+        # # add boolean flags on whether obs has recent flood occurrences
+        # for months_after_flood in months_after_flood_list:
+        #     print(f"Number of flood within {months_after_flood} months: {master_df[f'within_{months_after_flood}_months_post_Flood_Date'].sum()}")
         
+        # add column to label treated properties i.e. within flood_buffer of radius (buffer)
+        # flood_union = flood_df['geometry'].union_all()
+        # master_df['flood_buffer'] = master_df['geometry'].apply(lambda x: flood_union.intersects(x))
         # if Flood_Date is not NA, then that means flood buffer intersects with the property, else there is no intersection
-        master_df['flood_buffer'] = master_df['Flood_Date'].apply(lambda x: x!=[pd.NaT])
+        master_df['flood_buffer'] = master_df['Flood_Date'].apply(lambda x: x!=[pd.NaT]) # this means it has never been treated, which can include never treated locations inside and outside of flood buffer
         print(f"Number of properties within {buffer} m buffer: {master_df['flood_buffer'].sum()}")
         print(f"Number of transactions with flood: {master_df['flood_buffer'].sum()}")
         print(master_df.columns)
@@ -344,22 +351,26 @@ def main(buffer=500, depth=5,
         master_df_minimal.to_csv(save_fp,index=False)
     
     end_time = time.perf_counter()
-    print(f"Saving file into...: {save_fp}\nExecution time: {int((end_time - start_time)/60)} mins.")
+    print(f"Saving file into...: {save_fp}\n=====Execution time: {int((end_time - start_time)/60)} mins.=====")
     return master_df_minimal
 
 if __name__ == '__main__':
     # buffer = 500
     depth = None #5
     months_after_flood_list = np.arange(-12,13,dtype=int).tolist()
+    Dt_min = -12
+    Dt_max = 12
     # months_after_flood_list = [6]
     flood_bins = None
-    save_dir = r"Exported_Data\robustness_checks"
+    save_dir = r"Exported_Data\staggered_did"
+    if not os.path.exists(save_dir):
+        os.mkdir(save_dir)
     pickle_data = True
     # boolean flag to indicate which processing should be conducted
     flood_arg = True
-    flood_hotspot_arg = True
-    tide_prone_arg = True
-    flood_adaptation_arg = True
+    flood_hotspot_arg = False
+    tide_prone_arg = False
+    flood_adaptation_arg = False
     drainage_density_arg = False
     primary_school_arg = False
     workplace_cluster_arg = False
@@ -373,6 +384,7 @@ if __name__ == '__main__':
     # for buffer in np.arange(50,100,step=50,dtype=int):
         main(buffer=buffer, depth=depth,
             months_after_flood_list = months_after_flood_list, 
+            Dt_min = Dt_min, Dt_max = Dt_max,
             flood_bins = flood_bins,
             save_dir = save_dir,
             pickle_data=pickle_data,
